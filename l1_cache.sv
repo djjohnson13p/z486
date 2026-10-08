@@ -564,6 +564,10 @@ wire [STOREQ_CNT_BITS-1:0] storeq_count_wr_next =
 always_comb begin
     lookup_forward_data = lookup_way_data;
     fill_word_data = mem_dout;
+    // The uncached read needs no store-queue forwarding: S_LOOKUP launches it only with the
+    // queue empty and not draining (`storeq_empty && !storeq_draining`), and the queue is
+    // filled only in S_LOOKUP and S_NW_WRITE, so it is still empty for the whole of
+    // S_BYPASS_WAIT and every slot's `k < storeq_count` guard is false. Asserted below.
     bypass_forward_data = mem_dout;
     wide_line_data = mem_line_dout;
 
@@ -572,7 +576,6 @@ always_comb begin
         if (k < storeq_count) begin
             lookup_forward_data = forward_storeq_slot(lookup_forward_data, storeq_valid[storeq_age_idx(storeq_tail, k)], storeq_addr[storeq_age_idx(storeq_tail, k)], storeq_data[storeq_age_idx(storeq_tail, k)], storeq_be[storeq_age_idx(storeq_tail, k)], req_addr_dw);
             fill_word_data = forward_storeq_slot(fill_word_data, storeq_valid[storeq_age_idx(storeq_tail, k)], storeq_addr[storeq_age_idx(storeq_tail, k)], storeq_data[storeq_age_idx(storeq_tail, k)], storeq_be[storeq_age_idx(storeq_tail, k)], fill_addr_dw);
-            bypass_forward_data = forward_storeq_slot(bypass_forward_data, storeq_valid[storeq_age_idx(storeq_tail, k)], storeq_addr[storeq_age_idx(storeq_tail, k)], storeq_data[storeq_age_idx(storeq_tail, k)], storeq_be[storeq_age_idx(storeq_tail, k)], req_addr_dw);
             wide_line_data = forward_storeq_line_slot(wide_line_data, storeq_valid[storeq_age_idx(storeq_tail, k)], storeq_addr[storeq_age_idx(storeq_tail, k)], storeq_data[storeq_age_idx(storeq_tail, k)], storeq_be[storeq_age_idx(storeq_tail, k)], req_addr_r[31:4]);
         end
     end
@@ -1019,6 +1022,10 @@ always_ff @(posedge clk) begin
             end
 
             S_BYPASS_WAIT: begin
+                // synthesis translate_off
+                if (!storeq_empty)
+                    $fatal(1, "l1_cache: store queue not empty during an uncached read");
+                // synthesis translate_on
                 if (mem_resp_valid) begin
                     dout_r <= bypass_forward_data;
                     resp_valid_r <= 1'b1;
