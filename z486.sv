@@ -681,7 +681,8 @@ wire        pf_spec_store;
 wire [11:4] pf_spec_store_line;
 wire        pf_spec_store_cross;
 wire        pf_spec_global_kill;
-wire        pf_spec_invlpg_kill;
+wire        pf_spec_tlb_kill;
+wire        tlbt_done;               // a TR6 access has reached the TLB
 wire        prot_redirect_prev;
 wire        prot_redirect_taken;
 
@@ -1239,10 +1240,11 @@ always_ff @(posedge clk) begin
         pf_spec_a20_r <= a20_enable;
 end
 wire        pf_spec_a20_kill = pf_spec_a20_r != a20_enable;
-// INVLPG retires a translation exactly as a CR3 write does, so it kills the
-// buffered lines too (they are tagged by linear address and hold bytes fetched
-// through the old mapping; tests/programs/hz_invlpg_spec).
-assign pf_spec_global_kill = pf_snoop_kill_r || cr3_write || pf_spec_invlpg_kill ||
+// INVLPG and a TR6 write retire a translation exactly as a CR3 write does, so
+// they kill the buffered lines too (they are tagged by linear address and hold
+// bytes fetched through the old mapping; tests/programs/hz_invlpg_spec,
+// hz_tr6_spec).
+assign pf_spec_global_kill = pf_snoop_kill_r || cr3_write || pf_spec_tlb_kill ||
                              (uc_exec && (uc_dest == DEST_CR0)) ||
                              pf_flush_kill_r || pf_spec_cpl_kill || pf_spec_a20_kill;
 
@@ -2054,7 +2056,13 @@ wire invlpg_request = invlpg_active && !invlpg_priv_fault;
 wire invlpg_ack;
 // Waiting for an older page walk does not depend on seg_fault.
 assign stall_invlpg = invlpg_active && !invlpg_priv_fault && !invlpg_ack;
-assign pf_spec_invlpg_kill = invlpg_request && invlpg_ack;   // the TLB invalidate cycle
+// INVLPG in the TLB invalidate cycle; a TR6 write both when it is requested
+// and when it has reached the TLB (it may wait behind a walker update), so a
+// line fetched through the replaced entry in between is killed too
+// (tests/programs/hz_tr6_spec).
+assign pf_spec_tlb_kill = (invlpg_request && invlpg_ack) ||
+                             (ENABLE_TLB_TEST && xreg_tr_write && (xreg_index == 3'd6)) ||
+                             tlbt_done;
 
 // 486 INVD (0F 08) / WBINVD (0F 09): a native whole-L1 flush.  The decoder
 // registers the entry action like INVLPG's, so neither the entry address nor a
@@ -2634,6 +2642,7 @@ paging_unit #(.VGA_BASE(VGA_BASE), .VGA_TOP(VGA_TOP)) paging_inst (
     .tlbt_tr6           (IND & 32'hFFFF_FFE1),
     .tlbt_tr7           (TR7),
     .tlbt_lookup_done   (tlbt_lookup_done),
+    .tlbt_done          (tlbt_done),
     .tlbt_tr6_out       (tlbt_tr6_out),
     .tlbt_tr7_out       (tlbt_tr7_out),
 

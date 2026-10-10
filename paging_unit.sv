@@ -32,6 +32,7 @@ module paging_unit
     input        [31:0] tlbt_tr6,
     input        [31:0] tlbt_tr7,
     output              tlbt_lookup_done,
+    output              tlbt_done,       // the cycle after a TR6 access reached the TLB
     output       [31:0] tlbt_tr6_out,
     output       [31:0] tlbt_tr7_out,
 
@@ -299,7 +300,7 @@ paging_tlb #(.VGA_BASE(VGA_BASE), .VGA_TOP(VGA_TOP)) tlb_inst (
     .tlbt_req       (tlbt_req),
     .tlbt_tr6       (tlbt_tr6),
     .tlbt_tr7       (tlbt_tr7),
-    .tlbt_done      (),
+    .tlbt_done      (tlbt_done),
     .tlbt_lookup_done(tlbt_lookup_done),
     .tlbt_tr6_out   (tlbt_tr6_out),
     .tlbt_tr7_out   (tlbt_tr7_out)
@@ -512,7 +513,10 @@ always_ff @(posedge clk or negedge reset_n) begin
         pf_xlat_pfn <= 20'd0;
         pf_xlat_user <= 1'b0;
         pf_xlat_pcd <= 1'b0;
-    end else if (cr3_write || invlpg_fire || tlbt_req || pf_xlat_evict) begin
+    // A TR6 write reaches the TLB a cycle or more after tlbt_req, and a
+    // refresh in that write cycle copies the entry it replaces: kill again
+    // when the access is done.
+    end else if (cr3_write || invlpg_fire || tlbt_req || tlbt_done || pf_xlat_evict) begin
         pf_xlat_valid <= 1'b0;
     end else if (pg_enable && idle_pf_req && pf_tlb_match && tlb_hit) begin
         pf_xlat_valid <= 1'b1;
