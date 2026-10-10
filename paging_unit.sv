@@ -106,6 +106,9 @@ module paging_unit
     output      [127:0] pf_rdata,          // Cache line returned to prefetch
     output reg          pf_nocache,        // pf_rdata is not cacheable (PCD or CR0.CD)
     output reg          pf_fault,          // Page fault response to prefetch
+    input               pf_spec,           // The request is a speculative branch-target fetch
+    output reg          pf_refused,        // Ack of a speculative fetch that was not launched
+    input               icache_req_spec_ok,// The fetch address is in a cacheable-RAM window
     output reg   [2:0]  pf_fault_code,     // Saved prefetch fault code ([U,W,P])
     output reg   [31:0] pf_fault_addr,     // Linear address of faulted prefetch
 
@@ -499,9 +502,22 @@ reg        pf_xlat_user;
 reg        pf_xlat_pcd;
 wire pf_xlat_hit = !fast_off && pf_xlat_valid && (pf_xlat_vpn == pf_linear_addr[31:12]) &&
                    ((pf_cpl != 2'd3) || pf_xlat_user);
-wire fast_pf_candidate = idle_pf_req && cache_lookup_granted &&
-                         (!pg_enable || pf_xlat_hit ||
-                          (pf_tlb_match && tlb_hit && pf_tlb_user_ok));
+wire pf_xlat_ok = !pg_enable || pf_xlat_hit ||
+                  (pf_tlb_match && tlb_hit && pf_tlb_user_ok);
+// A speculative target fetch (a branch the program may never take) is launched
+// only on an existing translation and only at cacheable RAM: a 486 makes no
+// such fetch, so it must not walk the page tables (setting Accessed bits on
+// pages the program never touched) or read a page with side effects (PCD, CR0.CD,
+// the VGA/device windows, memory beyond the RAM bound). Anything else is
+// refused: acked with pf_refused, and the real fetch follows the branch.
+wire pf_spec_pcd = pg_enable && (pf_xlat_hit ? pf_xlat_pcd : tlb_is_pcd);
+wire pf_spec_attr_ok = icache_req_spec_ok && !pf_spec_pcd && !cr0[30] &&
+                       !z486_page_in_window(fast_pf_phys[31:12], VGA_BASE, VGA_TOP);
+wire pf_spec_known = !pg_enable || pf_xlat_hit || pf_tlb_match;
+wire fast_pf_candidate = idle_pf_req && cache_lookup_granted && pf_xlat_ok &&
+                         (!pf_spec || pf_spec_attr_ok);
+wire pf_spec_refuse = idle_pf_req && pf_spec && pf_spec_known &&
+                      (!pf_xlat_ok || !pf_spec_attr_ok);
 wire [31:0] fast_pf_phys = !pg_enable ? pf_linear_addr :
                            pf_xlat_hit ? {pf_xlat_pfn, pf_linear_addr[11:0]} :
                                          {tlb_physical_addr[31:12], pf_linear_addr[11:0]};
@@ -807,6 +823,7 @@ always_ff @(posedge clk or negedge reset_n) begin
         icache_req_pcd_r <= 1'b0;
         page_fault <= 1'b0;
         pf_fault <= 1'b0;
+        pf_refused <= 1'b0;
         pf_fault_code <= 3'b000;
         pf_fault_addr <= 32'h0;
         fault_code <= 3'b000;
@@ -864,6 +881,7 @@ always_ff @(posedge clk or negedge reset_n) begin
             icache_req_valid_r <= 1'b0;
         page_fault <= 1'b0;
         pf_fault <= 1'b0;
+        pf_refused <= 1'b0;
         fault_code <= 3'b000;
         walk_request <= 1'b0;
         mem_accepted_r <= 1'b0;
@@ -973,6 +991,13 @@ always_ff @(posedge clk or negedge reset_n) begin
                     if (fast_pf_candidate) begin
                         // Completion is tracked by pf_fast_pending, allowing
                         // demand translation to proceed in parallel.
+                    end else if (pf_spec) begin
+                        // Never walk or fault for a speculative fetch: wait for
+                        // the lookup/lookup slot, or refuse it.
+                        if (pf_spec_refuse) begin
+                            pf_refused <= 1'b1;
+                            pf_ack_toggle_r <= ~pf_ack_toggle_r;
+                        end
                     end else if (pg_enable && pf_tlb_match && tlb_hit) begin
                         // Permission fail: silently fault, ack prefetch.
                         ack_prefetch_fault(pf_linear_addr,

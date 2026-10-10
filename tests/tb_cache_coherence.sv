@@ -91,7 +91,7 @@ module tb_cache_coherence;
         .x87_req_selected(), .x87_req_accepted(1'b0), .x87_req_complete(1'b0),
         .x87_read_complete(1'b0), .x87_rdata(32'h0),
         .icache_req_valid(icache_req_valid),
-        .icache_req_phys_addr_raw(icache_req_addr), .icache_req_is_pcd(1'b0),
+        .icache_req_phys_addr_raw(icache_req_addr), .icache_req_is_pcd(1'b0), .icache_req_spec_ok(),
         .icache_req_accepted(icache_req_accepted),
         .icache_req_complete(icache_req_complete),
         .icache_rdata(icache_rdata),

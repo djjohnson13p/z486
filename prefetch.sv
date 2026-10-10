@@ -35,6 +35,12 @@ module prefetch
     input      [127:0] pf_rdata,
     input             pf_nocache,    // this line is not cacheable (PTE.PCD or CR0.CD)
     input             pf_fault,      // page fault response for this fetch
+    // The paging unit declined a speculative target fetch (no TLB hit, or the
+    // page is not cacheable RAM): the ack carries no data and no fault.
+    input             pf_refused,
+    // The outstanding request is a speculative target fetch. It drops when a
+    // flush adopts the fetch as the real post-flush fill.
+    output            pf_spec,
     input      [2:0]  pf_fault_code,
     input      [31:0] pf_fault_addr,
     input             fetch_blocked, // decoder needs bytes beyond buffered data
@@ -183,7 +189,8 @@ wire pf_ack_edge = (pf_ack_toggle != pf_ack_prev);
 
 wire [2:0] fetch_write_words = 3'd4 - {1'b0, pf_fetch_word_start};
 // A spec-fetch response goes to the spec buffer, never the queue.
-wire good_ack = pf_ack_edge && !pf_drop_inflight && !pf_fault && !spec_inflight;
+wire good_ack = pf_ack_edge && !pf_drop_inflight && !pf_fault && !pf_refused && !spec_inflight;
+assign pf_spec = spec_inflight;
 wire [4:0] pf_words_after_ack =
     {1'b0, pf_word_count} + (good_ack ? {2'b00, fetch_write_words} : 5'd0);
 wire pf_has_line_space = (pf_words_after_ack <= 5'd4);
@@ -216,7 +223,7 @@ wire spec_launch = spec_want && !pf_inflight && !q_flush && !pf_suspend &&
                    !pf_redirect_queued && !pf_drop_inflight;
 wire spec_line_match   = spec_valid && !spec_poison && spec_owner;
 wire spec_adopt        = spec_inflight && !spec_poison && !pf_ack_edge && spec_owner;
-wire spec_data_now     = spec_inflight && !spec_poison && pf_ack_edge && !pf_fault &&
+wire spec_data_now     = spec_inflight && !spec_poison && pf_ack_edge && !pf_fault && !pf_refused &&
                          spec_owner;
 wire spec_flush_hit    = q_flush && (spec_line_match || spec_data_now);
 // synthesis translate_off
@@ -580,8 +587,8 @@ always_ff @(posedge clk or negedge reset_n) begin
                 // buffer (never suspends - the fetch may be down a wrong path).
                 spec_inflight <= 1'b0;
                 spec_line <= pf_rdata;
-                spec_valid <= !pf_fault && !spec_poison && !pf_nocache;
-            end else if (spec_adopted_r && !pf_drop_inflight && !pf_fault) begin
+                spec_valid <= !pf_fault && !pf_refused && !spec_poison && !pf_nocache;
+            end else if (spec_adopted_r && !pf_drop_inflight && !pf_fault && !pf_refused) begin
                 // Adopted post-flush fill arriving: it fills the queue as
                 // usual (fill_commit), AND populates the buffer for the
                 // loop's next iteration (re-own via spec_match_now, no
@@ -590,7 +597,9 @@ always_ff @(posedge clk or negedge reset_n) begin
                 spec_valid <= !spec_poison && !pf_nocache;
                 pf_fetch_addr <= pf_fetch_addr + 32'd16;
                 pf_fetch_word_start <= 2'd0;
-            end else if (pf_drop_inflight || pf_fault) begin
+            end else if (pf_drop_inflight || pf_fault || pf_refused) begin
+                // A refused adopted fetch (pf_refused) leaves pf_fetch_addr at
+                // the target line: pf_can_fetch re-requests it as a real fetch.
                 pf_drop_inflight <= 1'b0;
                 pf_redirect_queued <= 1'b0;
                 if (pf_fault && !pf_drop_inflight) begin

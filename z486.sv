@@ -459,6 +459,8 @@ wire        pf_ack_toggle;
 wire [127:0] pf_rdata;
 wire         pf_nocache;
 wire        pf_fault;
+wire        pf_refused;
+wire        pf_spec;
 wire [2:0]  pf_fault_code;
 wire [31:0] pf_fault_addr;
 wire        ifetch_page_fault;
@@ -491,6 +493,7 @@ reg         bus_lock_r;             // LOCK# from a locked read until its stores
 wire        dcache_stores_drained_top;
 wire        icache_req_is_pcd;
 wire        icache_req_is_no_alloc;
+wire        icache_req_spec_ok;
 wire        dcache_req_accepted;
 wire        dcache_req_complete;
 wire        dcache_read_complete;
@@ -1028,6 +1031,7 @@ memory #(
     .icache_req_phys_addr_raw(icache_req_phys_addr_raw),
     .icache_req_is_pcd(icache_req_is_pcd),
     .icache_req_is_no_alloc(icache_req_is_no_alloc),
+    .icache_req_spec_ok(icache_req_spec_ok),
     .icache_req_accepted(icache_req_accepted),
     .icache_req_complete(icache_req_complete),
     .icache_rdata(icache_rdata),
@@ -1083,6 +1087,8 @@ prefetch prefetch_inst (
     .pf_rdata(pf_rdata),
     .pf_nocache(pf_nocache),
     .pf_fault(pf_fault),
+    .pf_refused(pf_refused),
+    .pf_spec(pf_spec),
     .pf_fault_code(pf_fault_code),
     .pf_fault_addr(pf_fault_addr),
     // A retained fetch fault becomes precise once older instructions retire.
@@ -2704,6 +2710,9 @@ paging_unit #(.VGA_BASE(VGA_BASE), .VGA_TOP(VGA_TOP)) paging_inst (
     .pf_rdata           (pf_rdata),
     .pf_nocache         (pf_nocache),
     .pf_fault           (pf_fault),
+    .pf_refused         (pf_refused),
+    .pf_spec            (pf_spec),
+    .icache_req_spec_ok (icache_req_spec_ok),
     .pf_fault_code      (pf_fault_code),
     .pf_fault_addr      (pf_fault_addr),
 

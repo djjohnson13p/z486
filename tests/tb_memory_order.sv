@@ -92,7 +92,7 @@ module tb_memory_order;
         .x87_rdata(32'h0),
 
         .icache_req_valid(1'b0),
-        .icache_req_phys_addr_raw(32'h0), .icache_req_is_pcd(1'b0),
+        .icache_req_phys_addr_raw(32'h0), .icache_req_is_pcd(1'b0), .icache_req_spec_ok(),
         .icache_req_accepted(),
         .icache_req_complete(),
         .icache_rdata(),

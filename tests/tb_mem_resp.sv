@@ -147,7 +147,7 @@ module tb_mem_resp
 
     .icache_req_valid(icache_valid),
     .icache_req_phys_addr_raw(icache_addr),
-    .icache_req_is_pcd(1'b0),
+    .icache_req_is_pcd(1'b0), .icache_req_spec_ok(),
     .icache_req_accepted(icache_accepted),
     .icache_req_complete(icache_complete),
     .icache_rdata(icache_line),

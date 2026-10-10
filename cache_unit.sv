@@ -109,6 +109,7 @@ module cache_unit
     // The I-cache's own NO_ALLOC verdict for the request (template window), so the
     // prefetcher's branch-target buffer can refuse the same lines.
     output logic icache_req_is_no_alloc,
+    output logic icache_req_spec_ok,
     output logic icache_req_accepted,
     output logic icache_req_complete,
     output logic [127:0] icache_rdata,
@@ -219,6 +220,7 @@ localparam bit Z486_TEMPLATE_WINDOWS = VGA_ENABLE | APERTURE_ENABLE |
 
 // Quartus 17 rejects a user-enum-typed net; carry the class as a plain 2-bit vector.
 wire [1:0] dcache_vipt_class;
+wire icache_req_class_ram;   // the instruction fetch's window class is CACHEABLE
 
 // The runtime cacheable-RAM bound: min(ram_cache_top, NO_ALLOC_BOUND) keeps the
 // L1-tag-reach check above as the hard ceiling; the runtime input can only tighten it.
@@ -251,6 +253,14 @@ if (Z486_TEMPLATE_WINDOWS) begin : g_memmap_windows
     assign dcache_req_is_uncached = dcache_req_is_vga_mem ||
                                     (dcache_req_class != Z486_CACHE_CACHEABLE);
     assign dcache_req_is_direct = (dcache_req_class == Z486_CACHE_DIRECT);
+    assign icache_req_class_ram = (z486_classify_phys(
+        icache_req_phys_addr_raw, icache_req_phys_addr, icache_req_phys_addr,
+        VGA_ENABLE, VGA_CLASS, VGA_BASE, VGA_TOP,
+        APERTURE_ENABLE, APERTURE_CLASS, APERTURE_BASE, APERTURE_TOP,
+        ALIAS_ENABLE, ALIAS_CLASS,
+        ALIAS0_BASE, ALIAS0_TOP, ALIAS1_BASE, ALIAS1_TOP, ALIAS2_BASE, ALIAS2_TOP,
+        WIN0_ENABLE && win0_unmapped, WIN0_CLASS, WIN0_BASE, WIN0_TOP,
+        NO_ALLOC_ENABLE, NO_ALLOC_CLASS, no_alloc_bound_eff) == Z486_CACHE_CACHEABLE);
     assign icache_req_is_no_alloc = (z486_classify_phys(
         icache_req_phys_addr_raw, icache_req_phys_addr, icache_req_phys_addr,
         VGA_ENABLE, VGA_CLASS, VGA_BASE, VGA_TOP,
@@ -265,8 +275,18 @@ end else begin : g_memmap_inert
     assign dcache_req_is_uncached = dcache_req_is_vga_mem;
     assign dcache_req_is_direct = 1'b0;
     assign icache_req_is_no_alloc = 1'b0;
+    assign icache_req_class_ram = 1'b1;
 end
 endgenerate
+
+// A speculative target fetch is allowed only where a real fetch would be an
+// ordinary cacheable RAM read: a read of a device window, of memory beyond the
+// RAM bound or of the device-MMIO window can have side effects a 486 never
+// causes by fetching a branch target it does not take.
+assign icache_req_spec_ok = icache_req_class_ram &&
+                            !(ENABLE_DEVICE_MMIO && device_mmio_enable &&
+                              ((icache_req_phys_addr & DEVICE_MMIO_MASK) ==
+                               (device_mmio_base & DEVICE_MMIO_MASK)));
 
 // synthesis translate_off
 // DEFAULT-EQUIVALENCE FUSES: the default parameter set must reproduce upstream's
