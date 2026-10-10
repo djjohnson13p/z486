@@ -39,7 +39,7 @@ added to before trusting it.
 | C5 | D$ store queue vs uncacheable/IO ordering | IO/INTA/device accesses drain older stores; direct VGA transactions remain mutually ordered but may bypass unrelated RAM stores | guarded | `tb_memory_order` checks both drain and intentional VGA bypass |
 | C6 | I$ lookup vs snoop/patch | a fetch whose tag was captured before a same-line snoop or pending patch must miss; while a store patch is held behind an invalidate (address not visible), every lookup misses | proven | `lookup_snoop_conflict` (`l1_icache.sv`, `eb6f9c4`), `patch_held`; `tb_cache_coherence` CASES 2-3 |
 | C7 | I$ fill vs snoop | a snoop that clears the fill's line cannot be reinstated; a snoop that owns the way port defers the install instead of dropping it | proven | `fill_line_snooped_r`, `fill_tag_wait_r`; `tb_l1_icache` |
-| C8 | I$ fill vs in-flight D$ stores | a fill merges the I$ patch queue (the last three D$ store patches) and the registered patch over the gathered line; a whole-L1 flush retires the queue | proven | `l1_icache.sv` fill merge (`patchq_*`, `snoop_patch_r`); `tb_cache_coherence` CASES 1, 6 |
+| C8 | I$ fill vs in-flight D$ stores | an I$ line read never overtakes a posted store into that line (it waits for the drain); stores arriving during the fill are merged from the patch queue and the registered patch; a whole-L1 flush retires the queue | **fixed** (the queue alone overran) | `cache_unit.sv` `icache_fill_storeq_hit`, `l1_cache.sv` `storeq_line_hit`; `hz_patchq_overrun`; `tb_cache_coherence` CASES 1, 6 |
 | C9 | D$→I$ store patch delivery | a store patch is not dropped when it collides with an external invalidate; invalidate has priority | guarded | `tb_memory_order` strands a patch behind external then queued DIRECT invalidates; `tb_l1_cache` checks idle store backpressure |
 | C10 | external snoop fan-out | one snoop reaches both caches with the same address | checked | `cache_unit.sv` wiring; `tb_l1_icache`, `tb_l1_cache` |
 | C11 | whole-L1 flush | a sweep completes bounded regardless of in-flight fills, and a request during a walk is queued | proven | `8c5a832`; `tb_cache_flush` |
@@ -52,6 +52,10 @@ added to before trusting it.
 | C18 | I$ patch queue vs whole-L1 flush | a flush retires every queued patch, so a later fill cannot merge CPU bytes over DMA data | **fixed** | `l1_icache.sv` (`flush_launch`); `dma_flush_patchq`, `tb_cache_coherence` CASE 6 |
 | C19 | branch-target buffer vs flush drain | the buffer stays killed for the whole flush busy window, so no line read from the pre-flush I$ during the drain survives | **fixed** | `pf_flush_kill_r` (`z486.sv`); `flush_async_spec` |
 | C20 | I$ lookup vs held store patch | see C6: a patch held in `cache_unit`'s slot behind an invalidate blocks hits | **fixed** | `patch_held`; `tb_cache_coherence` CASES 2-3 |
+| C21 | branch-target buffer vs INVLPG / TR6 | INVLPG and a TR6 write kill both buffered lines like a CR3 write (TR6 also when the write reaches the TLB); `pf_xlat` takes the TR6 write-cycle kill | **fixed** | `pf_spec_tlb_kill` (`z486.sv`), `paging_unit.sv` `tlbt_done`; `hz_invlpg_spec`, `hz_tr6_spec` |
+| C22 | branch-target buffer vs A20 | an edge of the A20 gate kills both buffered lines (they are linear-tagged; the caches are tagged after the mask) | **fixed** | `pf_spec_a20_kill` (`z486.sv`); `hz_spec_a20_rm` (`make test-bigmem`) |
+| C23 | VIPT probe sharing a store's preread | the share is taken only when that store is accepted in the same cycle, so `vipt_lookup_store_match` can merge it | **fixed** | `vipt_probe_share` (`l1_cache.sv`) + resolve fuse; `hz_vipt_share_unposted` |
+| C24 | branch-target victim vs a same-cycle store | a line demoted into the victim slot in a kill cycle is not kept | **fixed** | the `fix(prefetch)` victim-store commit; `smc_spec_demote_rm` |
 
 ## Found: C1/C2, the D$ external-snoop guards (upstream omission)
 
@@ -170,6 +174,16 @@ still be accepted through LOOKUP's write opening, or a shared probe could hit
 while a flush was armed. `tb_l1_cache` accepts the older store/probe, arms the
 flush, requires all new openings/resolve hits to close, and then checks the
 older store survives. Both caches mask read acceptance at the arm boundary.
+
+## Found: C21-C24, the hazard audit (2026-10-10)
+
+`docs/z486-hazard-audit.md` audited every copy of memory-derived state that is
+moved, demoted, filled or replayed while a store, invalidate or fill lands on
+it, after the victim-slot defect (C24). It found C8's patch queue overrunning in
+normal write-through mode (not only under NW=1: a fill that read memory ahead of
+a posted store lost it once three younger patches pushed it out), the buffer
+missing INVLPG, TR6 and A20 (C21, C22), and a VIPT probe sharing the preread of
+a store the cache had refused (C23).
 
 ## Found: C17-C20, self-modifying code and the platform flush
 
