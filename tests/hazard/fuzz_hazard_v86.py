@@ -45,7 +45,9 @@ NF = 40
 F_ALIAS_SEG = 0x9C00       # linear 0x9C000 -> frame 0x1C000 (the stubs' page)
 WIN_SEG, DWIN_SEG = 0xD000, 0xD400
 WIN_LIN, DWIN_LIN = 0xD0000, 0xD4000
-WF = (0x60000, 0x61000)    # code-window frames: stub j at +8*j (B8 iw CB ..)
+WF = (0x60000, 0x61000)    # code-window frames: stub j at +8*j: JMP SHORT +1, CC,
+                           # mov ax, imm16, RETF - the JMP requests (buffers) the
+                           # stub's own line, and lands on the imm16 it holds
 DF = (0x62000, 0x63000)    # data-window frames
 NW = 16
 PT = 0x1000
@@ -180,7 +182,7 @@ class Gen:
             self.e("push ds")
             self.e(f"mov ax, {fr >> 4:#x}")
             self.e("mov ds, ax")
-            self.e(f"mov word [{8 * j + 1:#x}], {self.r16():#x}")
+            self.e(f"mov word [{8 * j + 4:#x}], {self.r16():#x}")
             self.e("pop ds")
             self.pad()
             self.e(f"call {WIN_SEG:#x}:{8 * j:#x}")
@@ -231,16 +233,16 @@ class Gen:
         for f in WF:
             for j in range(NW):
                 v = self.r16()
-                wins.append((f + 8 * j, 0xb8 | (v << 8) | (0xcb << 24)))
+                wins.append((f + 8 * j, 0xb8cc01eb, v | 0xcccb0000))
         dseed = self.r.randrange(1 << 32)
         eflags = 0x00023202 if self.irq else 0x00023002   # VM, IOPL 3, (IF)
         mon_init = []
         for off, d0, w1 in stubs:
             mon_init.append(f"    mov dword [{CODE + off:#x}], {d0:#x}")
             mon_init.append(f"    mov word [{CODE + off + 4:#x}], {w1:#x}")
-        for a, d0 in wins:
+        for a, d0, d1 in wins:
             mon_init.append(f"    mov dword [{a:#x}], {d0:#x}")
-            mon_init.append(f"    mov dword [{a + 4:#x}], 0xcccccccc")
+            mon_init.append(f"    mov dword [{a + 4:#x}], {d1:#x}")
         guest = "\n".join(self.G)
         return f"""BITS 16
 ORG 0
