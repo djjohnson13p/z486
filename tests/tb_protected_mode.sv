@@ -890,6 +890,30 @@ module tb_protected_mode #(
         if (reset_n && count_rd_en && valid && ready && !rd_busy && !write && !io &&
             ({addr, 2'b00} == {count_rd_addr[31:2], 2'b00}))
             rd_count_seen <= rd_count_seen + 1;
+    // +watch_lo=<hex>/+watch_hi=<hex>/+expect_watch_reads=<n>: bus memory reads
+    // whose byte range overlaps [lo, hi] (inclusive) must number exactly n. A
+    // read is a single-beat read, a burst of burstcount DWORDs or a 16-byte
+    // line fill. Stores and I/O are not counted.
+    reg  [31:0] watch_lo = 32'h0, watch_hi = 32'h0;
+    bit         watch_en = 1'b0;
+    int         expect_watch_reads = -1;
+    longint     watch_seen = 0;
+    reg  [31:0] watch_first = 32'h0;
+    initial begin
+        watch_en = $value$plusargs("watch_lo=%h", watch_lo) &&
+                   $value$plusargs("watch_hi=%h", watch_hi);
+        void'($value$plusargs("expect_watch_reads=%d", expect_watch_reads));
+    end
+    wire [31:0] watch_rd_base = {addr, 2'b00};
+    wire [31:0] watch_rd_len  = (LINE_FILL && line_fill_en && line_read) ? 32'd16
+                                                                         : {22'd0, burstcount, 2'b00};
+    always @(posedge clk)
+        if (reset_n && watch_en && valid && ready && !rd_busy && !write && !io &&
+            (watch_rd_base <= watch_hi) &&
+            ((watch_rd_base + watch_rd_len - 32'd1) >= watch_lo)) begin
+            if (watch_seen == 0) watch_first <= watch_rd_base;
+            watch_seen <= watch_seen + 1;
+        end
     // +max_lock_run=<n>: fail a PASS if LOCK# was ever held for more than n
     // consecutive cycles (an over-long lock holds every other master off).
     int         max_lock_run = 0;
@@ -1135,6 +1159,8 @@ module tb_protected_mode #(
                             ((max_lock_run != 0) && (lock_run_max > max_lock_run)) ||
                             (count_rd_en && (expect_rd_count >= 0) &&
                              (rd_count_seen != expect_rd_count)) ||
+                            (watch_en && (expect_watch_reads >= 0) &&
+                             (watch_seen != expect_watch_reads)) ||
                             ($test$plusargs("expect_lock") &&
                              ((locked_reads == 0) || (locked_writes == 0) ||
                               bus_lock)) ||
@@ -1151,6 +1177,11 @@ module tb_protected_mode #(
                                 $display("  No platform level overlapped an INVD/WBINVD");
                             else if ($test$plusargs("expect_platform_flush"))
                                 $display("  Platform flush/DMA poke was not exercised");
+                            else if (watch_en && (expect_watch_reads >= 0) &&
+                                     (watch_seen != expect_watch_reads))
+                                $display("  %0d bus reads in [%08x,%08x], first at %08x (expected %0d)",
+                                         watch_seen, watch_lo, watch_hi, watch_first,
+                                         expect_watch_reads);
                             else if (count_rd_en && (expect_rd_count >= 0) &&
                                      (rd_count_seen != expect_rd_count))
                                 $display("  %0d bus reads of %08x (expected %0d)",
