@@ -338,14 +338,12 @@ def run_core(
     trace: bool = False,
     trace_io: bool = False,
     progress: bool = False,
-    cpu_speed: int = 0,
     profile_m0: bool = False,
 ) -> RunResult:
     cmd = [
         str(exe),
         f"+mem={HEX_FILE}",
         f"+cycles={cycles}",
-        f"+cpu_speed={cpu_speed}",
     ]
     if mem_model == "simple":
         cmd.append("+simple_mem")
@@ -485,14 +483,6 @@ def main() -> int:
         "--profile-m0", action="store_true",
         help="report sustained issue and frontend-starvation counters",
     )
-    parser.add_argument(
-        "--cpu-speed",
-        type=int,
-        choices=range(4),
-        default=0,
-        metavar="SEL",
-        help="CPU speed selector: 0=full, 1=15 MHz, 2=30 MHz, 3=56 MHz",
-    )
     parser.add_argument("-v", "--verbose", action="store_true", help="show build commands/output")
     args = parser.parse_args()
 
@@ -546,7 +536,6 @@ def main() -> int:
             trace=args.trace,
             trace_io=args.trace_io,
             progress=args.progress,
-            cpu_speed=args.cpu_speed,
             profile_m0=args.profile_m0,
         )
         for core in cores

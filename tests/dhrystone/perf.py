@@ -72,7 +72,6 @@ class CycleSample:
     d2_payload_ready: int
     d2_ready_base: int
     d2_ready: int
-    throttle_hold: int
     d2_vipt_ea_hazard: int
     vipt_replay_valid: int
     vipt_slow_busy: int
@@ -231,7 +230,6 @@ def watched_signals(signals) -> tuple[dict[str, int], dict[str, str], set[str]]:
         "d2_payload_ready": [".dut.d2_payload_ready"],
         "d2_ready_base": [".dut.d2_ready_base"],
         "d2_ready": [".dut.d2_ready"],
-        "throttle_hold": [".dut.throttle_hold"],
         "d2_vipt_ea_hazard": [".dut.d2_vipt_ea_hazard"],
         "vipt_replay_valid": [".dut.vipt_load_replay_r.valid"],
         "vipt_slow_busy": [".dut.vipt_load_slow_busy"],
@@ -364,7 +362,6 @@ def read_trace(
                     d2_payload_ready=val("d2_payload_ready"),
                     d2_ready_base=val("d2_ready_base"),
                     d2_ready=val("d2_ready"),
-                    throttle_hold=val("throttle_hold"),
                     d2_vipt_ea_hazard=val("d2_vipt_ea_hazard"),
                     vipt_replay_valid=val("vipt_replay_valid"),
                     vipt_slow_busy=val("vipt_slow_busy"),
@@ -587,9 +584,7 @@ def main() -> int:
             elif not sample.d2_payload_ready:
                 reason = "d2_payload"
             elif not sample.d2_ready_base:
-                if sample.throttle_hold:
-                    reason = "throttle"
-                elif sample.d2_vipt_ea_hazard:
+                if sample.d2_vipt_ea_hazard:
                     reason = "vipt_ea_hazard"
                 else:
                     reason = "base_control"

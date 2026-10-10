@@ -114,7 +114,7 @@ speculative reference is already killed by the store-address compare in
 `z486_pc98_preset.svh` exposes `` `Z486_PC98_MAP_PARAMS ``:
 
 ```systemverilog
-z486 #(`Z486_PC98_MAP_PARAMS, .CLOCK_RATE_MHZ(CLOCK_RATE_MHZ)) cpu ( ...
+z486 #(`Z486_PC98_MAP_PARAMS) cpu ( ...
     .win0_unmapped(win0_overlay_is_not_ram), ... );
 ```
 

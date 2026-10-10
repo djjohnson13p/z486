@@ -36,7 +36,6 @@ module hardwired_control
     input  logic        any_fault,
     input  logic        any_fault_r,
     input  logic        any_fault_issue,
-    input  logic        throttle_hold,
     input  logic        stall,
     input  logic        load_pipe_issue,     // Direct load bypasses its ROM recipe
     input  logic        load_pipe_pop,       //   and it is a POP (writes ESP in its first cycle)
@@ -375,10 +374,10 @@ wire pb_dead_slot = (recipe_rni && !recipe_state.jcc && !branch_ustep_rni &&
                      (jcc_fold_r || branch_ustep_rni)) ||
                     pb_load_slot_r;
 // The dead slot takes port B's word only when the issue is already known: the
-// registered eligibility, a complete payload, and no pending interrupt, trap
-// or throttle. A stall freezes the ROM output; a fault suppresses the slot.
+// registered eligibility, a complete payload, and no pending interrupt or
+// trap. A stall freezes the ROM output; a fault suppresses the slot.
 // So a word that is loaded but not issued never runs its bus operation.
-wire pb_b1_ready = pb_b1_ok_r && d2_push && pb_load_ready && !throttle_hold &&
+wire pb_b1_ready = pb_b1_ok_r && d2_push && pb_load_ready &&
                    !interrupt_pending && !trap_active && !single_step && !disabled;
 assign pb_slot = pb_valid &&
                  ((pb_dead_slot && pb_b1_ready) || i_rni_delay || !uc_active);

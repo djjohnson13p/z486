@@ -85,7 +85,7 @@ wire m0_dead_hardwired_slot =
     dut.hardwired_control_inst.recipe_rni && dut.uc_exec && !dut.i_issue &&
     !dut.hardwired_control_inst.recipe_state.slot_has_work;
 wire m0_instruction_supply_blocked =
-    !dut.stall && !dut.throttle_hold &&
+    !dut.stall &&
     (dut.decoder_fetch_blocked ||
      ((!dut.uc_active || m0_dead_hardwired_slot) && !dut.pb_valid &&
       dut.decq_empty));
@@ -307,7 +307,7 @@ always @(posedge clk) begin : m0_profile_sample
                 else                       m0_ldelig[6] += 1;
             end
             else if (!dut.d2_ready)                           m0_ldslot[5] += 1;
-            else if (!dut.pb_load_ready || dut.throttle_hold ||
+            else if (!dut.pb_load_ready ||
                      dut.interrupt_pending)                   m0_ldslot[6] += 1;
             else                                              m0_ldslot[7] += 1;
         end
@@ -347,7 +347,7 @@ always @(posedge clk) begin : m0_profile_sample
                      dut.pf_spec_owner_r)
                 chain_reason = 8;
             else if (!dut.hardwired_control_inst.issue_recipe.hardwired ||
-                     dut.throttle_hold || 1'b0 ||
+                     1'b0 ||
                      !dut.d2_ready)
                 chain_reason = 6;
             else

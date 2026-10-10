@@ -1,6 +1,6 @@
 # CPU-speed throttle: what it does today, and a design that can reach 286 speeds
 
-Status: **design proposal for owner review. Nothing here is implemented.**
+Status: **implemented 2026-10-10 as mode A with the gated-clock primitive (docs/throttle.md).** The text below is the original proposal; the section 9 questions were answered by the owner on 2026-10-10 (end of this file).
 Written 2026-10-07 against fork branch `pc98-throttle-fix`. That branch also
 fixes the throttle-exposed defects listed in `docs/fork-rebase-policy.md`,
 "Defects found while folding".
@@ -422,3 +422,17 @@ loop shape.
 6. Should a slow setting also slow the bus (wait states on VRAM and I/O), as a
    real slow machine's bus was slow?
 7. Labels: machine names ("286 8MHz") or plain rates?
+
+## 10. Owner decisions (2026-10-10)
+
+- No PC-98 title needs exact timing; fixed-speed games simply run too fast on
+  a faster CPU. Mode A's accuracy variance is acceptable and mode B (the 286
+  cost tables) is not needed (answers 1, 2, 5).
+- Range: minimum 0.5 MHz. Steps exponential, many low and few high:
+  0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 25, 33 MHz, then full - 14 values
+  in the 4-bit OSD field (`status[17:14]`; 14, 15 reserved = full).
+- The bus stays fast: only CPU execution is throttled, no wait states on VRAM
+  or I/O (answer 6).
+- Labels are plain rates ("8 MHz"), not machine names (answer 7).
+- Still open: question 3 (is a global clock free in the MiSTer fit; needs a
+  fit) and question 4 in its new form (the platform-side hold, docs/throttle.md).

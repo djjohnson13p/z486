@@ -1,5 +1,4 @@
 module z486_led_demo_soc #(
-    parameter [6:0] CLOCK_RATE_MHZ = 7'd50,
     parameter ENABLE_X87 = 1'b0,
     parameter FIRMWARE_HEX = "boards/firmware/blink.hex",
     parameter [15:0] LED_IO_PORT = 16'h0080
@@ -112,8 +111,7 @@ always_ff @(posedge clk or negedge reset_n) begin
 end
 
 z486 #(
-    .ENABLE_X87(ENABLE_X87),
-    .CLOCK_RATE_MHZ(CLOCK_RATE_MHZ)
+    .ENABLE_X87(ENABLE_X87)
 ) cpu (
     .clk(clk),
     .reset_n(reset_n),
@@ -141,7 +139,6 @@ z486 #(
     .a20_enable(1'b1),
     .win0_unmapped(1'b0),
     .ram_cache_top(32'hffff_ffff),
-    .cpu_speed_sel(2'd0),
     .fast_off_req(1'b0),
     .cache_off_req(1'b0),
     .x87_off_req(1'b0),

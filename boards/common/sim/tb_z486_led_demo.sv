@@ -23,7 +23,6 @@ localparam logic SIM_ENABLE_X87 = 1'b0;
 always #5 clk = ~clk;
 
 z486_led_demo_soc #(
-    .CLOCK_RATE_MHZ(7'd50),
     .FIRMWARE_HEX("boards/firmware/blink.hex"),
     .ENABLE_X87(SIM_ENABLE_X87)
 ) dut (

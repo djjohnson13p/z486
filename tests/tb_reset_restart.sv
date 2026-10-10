@@ -20,7 +20,7 @@ module tb_reset_restart;
         .intr(1'b0), .nmi(1'b0), .inta(),
         .snoop_valid(1'b0), .snoop_addr(32'd0),
         .cache_flush(1'b0), .cache_flush_busy(), .cache_flush_done(),
-        .a20_enable(1'b1), .cpu_speed_sel(2'd0),
+        .a20_enable(1'b1),
         .fast_off_req(1'b0), .cache_off_req(1'b0), .x87_off_req(1'b0),
         .single_step(1'b0),
         .triple_fault_reset()

@@ -41,7 +41,7 @@ set constraints [open $constraints_file w]
 puts $constraints [format {create_clock -name cpu_clk -period %.6f [get_ports clk]} \
     $period_ns]
 puts $constraints {set_false_path -from [get_ports reset_n]}
-puts $constraints {set_input_delay -clock cpu_clk 0.0 [get_ports {din[*] ready resp_valid intr nmi snoop_addr[*] snoop_valid a20_enable cache_flush win0_unmapped ram_cache_top[*] cpu_speed_sel[*] single_step}]}
+puts $constraints {set_input_delay -clock cpu_clk 0.0 [get_ports {din[*] ready resp_valid intr nmi snoop_addr[*] snoop_valid a20_enable cache_flush win0_unmapped ram_cache_top[*] single_step}]}
 puts $constraints {set_output_delay -clock cpu_clk 0.0 [get_ports {addr[*] be[*] burstcount[*] dout[*] valid write io inta cache_flush_busy cache_flush_done dbg_CS[*] dbg_EIP[*] dbg_CS_base[*] dbg_pe dbg_vm dbg_x87_state[*] triple_fault_reset dbg_gate_read dbg_gate_addr[*] dbg_pf_code[*] dbg_pf_addr[*] dbg_eflags[*] dbg_page_fault dbg_walk_pde[*] dbg_walk_pte[*] dbg_cr3[*] dbg_SP[*] dbg_issue dbg_issue_eip[*]}]}
 close $constraints
 read_xdc $constraints_file
@@ -52,8 +52,7 @@ read_xdc $constraints_file
 cd $build_dir
 synth_design -top z486 -part xck26-sfvc784-2LV-c -mode out_of_context \
     -include_dirs [list $cpu_dir [file join $cpu_dir x87]] \
-    -define Z486_XILINX=1 -generic "ENABLE_X87=$enable_x87" \
-    -generic "CLOCK_RATE_MHZ=$cpu_mhz"
+    -define Z486_XILINX=1 -generic "ENABLE_X87=$enable_x87"
 write_checkpoint -force [file join $build_dir z486_cpu_synth.dcp]
 report_utilization -hierarchical -file \
     [file join $build_dir utilization_synth.rpt]

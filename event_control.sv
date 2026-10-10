@@ -34,7 +34,6 @@ module event_control
     input  logic i_rni_delay,
     input  logic direct_wb_retire,
     input  logic rmw_fallback_delay_r,
-    input  logic throttle_parked_r,
     input  logic x87_direct_taken,   // the x87 overlay went direct at issue
 
     // Decoder: D2 entry and the EX instruction register
@@ -546,10 +545,6 @@ always_ff @(posedge clk) begin
 end
 
 // synthesis translate_off
-always @(posedge clk)
-    if (reset_n && throttle_parked_r && !d2_resident)
-        $fatal(1, "throttle parked without a resident D2 successor");
-
 // RPTI marks its restarted instruction by writing EIP before presenting an
 // interrupt boundary. That ownership must not leak into interrupt delivery,
 // where it suppresses the delivery routine's normal completion boundary.

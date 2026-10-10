@@ -52,13 +52,6 @@ module tb_dhrystone;
     reg         intr = 0;
     reg         nmi = 0;
     wire        inta;
-    reg  [1:0]  cpu_speed_sel = 2'd0;
-    integer     cpu_speed_arg;
-
-    initial begin
-        if ($value$plusargs("cpu_speed=%d", cpu_speed_arg))
-            cpu_speed_sel = cpu_speed_arg[1:0];
-    end
 
 `ifdef Z486_CURRENT_CORE
     z486 dut (
@@ -95,7 +88,6 @@ module tb_dhrystone;
         .a20_enable(1'b1),
         .win0_unmapped(1'b0),
         .ram_cache_top(32'hffff_ffff),
-        .cpu_speed_sel(cpu_speed_sel),
         .fast_off_req(1'b0),
         .cache_off_req(1'b0),
         .x87_off_req(1'b0),

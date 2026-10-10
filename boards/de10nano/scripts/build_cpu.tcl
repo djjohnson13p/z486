@@ -31,7 +31,6 @@ set_global_assignment -name VERILOG_MACRO "Z486_ALTERA=1"
 set_global_assignment -name SEARCH_PATH $cpu_dir
 set_global_assignment -name SEARCH_PATH [file join $cpu_dir x87]
 set_parameter -name ENABLE_X87 $enable_x87
-set_parameter -name CLOCK_RATE_MHZ $cpu_mhz
 
 set manifest [file join $cpu_dir boards common rtl_sources.f]
 set manifest_file [open $manifest r]
@@ -88,7 +87,7 @@ foreach port {
     win0_unmapped ram_cache_top[*]
     device_mmio_enable device_mmio_base[*]
     line_read line_din[*] line_resp_valid
-    cpu_speed_sel[*] single_step dbg_CS[*] dbg_EIP[*] dbg_CS_base[*]
+    single_step dbg_CS[*] dbg_EIP[*] dbg_CS_base[*]
     dbg_pe dbg_vm dbg_x87_state[*] triple_fault_reset
     dbg_gate_read dbg_gate_addr[*] dbg_pf_code[*] dbg_pf_addr[*] dbg_eflags[*]
     dbg_page_fault dbg_walk_pde[*] dbg_walk_pte[*] dbg_cr3[*] dbg_SP[*]

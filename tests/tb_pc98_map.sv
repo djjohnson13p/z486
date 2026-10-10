@@ -175,7 +175,6 @@ module tb_pc98_map;
         .cache_flush_busy(),
         .cache_flush_done(),
         .a20_enable(a20_enable),
-        .cpu_speed_sel(2'd0),
         .fast_off_req(1'b0),
         .cache_off_req(1'b0),
         .x87_off_req(1'b0),

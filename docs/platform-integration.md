@@ -154,12 +154,14 @@ debug view and its snapshot window (the IDT/IVT gate address can also select a
 memory window for a snapshot). A design that leaves them unconnected loses
 nothing — the fitter drops the unused wires — so they cost no area and no pins.
 
-## `cpu_speed_sel`
+## CPU speed (throttle)
 
-`cpu_speed_sel` is 2 bits: 0 = full speed, 1 = 15 MHz, 2 = 30 MHz, 3 = 56 MHz.
-It selects a fixed execution-rate limit in `cpu_throttle.sv`; memory, peripherals
-and the timebases keep running at the full clock, so guest pacing by a CPU delay
-loop scales while bus- and peripheral-paced guests do not change.
+z486 has no speed input.  A slower CPU is the same CPU on a gated clock: the
+platform runs `clk` from a gated copy of its own clock, with the enable from
+`cpu_throttle` (`cpu_throttle.sv`), samples the CPU's outputs and accepts its
+requests only on enabled edges, and holds pulse inputs (`resp_valid`,
+`line_resp_valid`, `snoop_valid`, `nmi`) until the CPU's next enabled edge
+(`cpu_pulse_hold`).  The contract and the rate table are in `docs/throttle.md`.
 
 ## 486 feature parameters
 

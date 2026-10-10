@@ -58,13 +58,36 @@ module tb_protected_mode #(
     reg         xdma_snoop_valid = 1'b0;
     bit win0_unmapped = 1'b0;
     initial win0_unmapped = $test$plusargs("win0_unmapped");
-    // +cpu_speed=N drives the throttle selector (0 = full speed).
-    bit [1:0] cpu_speed_sel = 2'd0;
+    // +cpu_speed=N selects the CPU throttle (0 = full speed): cpu_throttle.sv
+    // gates the CPU's clock, and everything on the bus side of the CPU runs on
+    // the ungated clk.  clk is 85 MHz for the throttle's purposes (TB_CLOCK_KHZ).
+    localparam int TB_CLOCK_KHZ = 85000;
+    bit [3:0] cpu_speed_sel = 4'd0;
     initial begin
         int speed;
         if ($value$plusargs("cpu_speed=%d", speed))
-            cpu_speed_sel = speed[1:0];
+            cpu_speed_sel = speed[3:0];
     end
+    wire cpu_ce;   // bus_ce: the CPU gets the clock edge that ends this cycle
+    wire cclk;     // the CPU's gated clock
+    cpu_throttle #(.CLOCK_RATE_KHZ(TB_CLOCK_KHZ)) throttle (
+        .clk(clk), .reset_n(reset_n), .speed_sel(cpu_speed_sel), .cpu_ce(cpu_ce));
+    cpu_clk_gate cpu_gate (.clk(clk), .ena(cpu_ce), .gclk(cclk));
+    initial begin
+        #1;
+        if (cpu_speed_sel != 0)
+            $display("[TB] throttle: speed %0d = %0d kHz of %0d kHz",
+                     cpu_speed_sel, throttle.rate_khz(cpu_speed_sel), TB_CLOCK_KHZ);
+    end
+    // The platform's pulse inputs reach the CPU only on its enabled edges.
+    wire resp_valid_h, line_resp_valid_h, snoop_valid_h, resp_stall, line_stall, snoop_stall;
+    cpu_pulse_hold hold_resp (.clk(clk), .reset_n(reset_n), .bus_ce(cpu_ce),
+        .pulse_i(resp_valid), .pulse_o(resp_valid_h), .stall(resp_stall));
+    cpu_pulse_hold hold_line (.clk(clk), .reset_n(reset_n), .bus_ce(cpu_ce),
+        .pulse_i(line_resp_valid), .pulse_o(line_resp_valid_h), .stall(line_stall));
+    cpu_pulse_hold hold_snoop (.clk(clk), .reset_n(reset_n), .bus_ce(cpu_ce),
+        .pulse_i(xdma_snoop_valid), .pulse_o(snoop_valid_h), .stall(snoop_stall));
+    wire resp_backpressure = resp_stall | line_stall;
     // +signal_delay_scale=N stretches the 0xEC signal delay: a program that
     // places an interrupt N clocks into an instruction sequence needs N times
     // the clocks when the throttle makes every instruction N times longer.
@@ -84,7 +107,7 @@ module tb_protected_mode #(
         .NO_ALLOC_ENABLE(PC98_MAP),
         .RAM_BOUND_ENABLE(PC98_MAP)
     ) dut (
-        .clk(clk),
+        .clk(cclk),
         .reset_n(reset_n),
         .addr(addr),
         .be(be),
@@ -97,20 +120,19 @@ module tb_protected_mode #(
         .write(write),
         .io(io),
         .ready(ready),
-        .resp_valid(resp_valid),
-        .line_resp_valid(line_resp_valid),
+        .resp_valid(resp_valid_h),
+        .line_resp_valid(line_resp_valid_h),
         .intr(intr),
         .nmi(nmi),
         .inta(inta),
         .snoop_addr(xdma_snoop_addr),
-        .snoop_valid(xdma_snoop_valid),
+        .snoop_valid(snoop_valid_h),
         .cache_flush(cache_flush_platform),
         .cache_flush_busy(cache_flush_busy),
         .cache_flush_done(cache_flush_done),
         .a20_enable(tb_a20),
         .win0_unmapped(win0_unmapped),
         .ram_cache_top(PC98_MAP ? MEM_SIZE : 32'hffff_ffff),
-        .cpu_speed_sel(cpu_speed_sel),
         .fast_off_req(1'b0),
         .cache_off_req(1'b0),
         .x87_off_req(1'b0),
@@ -151,7 +173,7 @@ module tb_protected_mode #(
     longint locked_writes = 0;
     longint locked_inta = 0;
     longint unlocked_inta = 0;
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (reset_n && bus_lock && valid && ready && !io) begin
             if (write) locked_writes <= locked_writes + 1;
             else       locked_reads <= locked_reads + 1;
@@ -161,7 +183,7 @@ module tb_protected_mode #(
         if ($test$plusargs("expect_pc98_map") && !PC98_MAP)
             $fatal(1, "PC-98 map test requires -GPC98_MAP=1");
     end
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (reset_n) begin
             if (dut.memory_inst.bus_unit_inst.icache_direct_inval)
                 direct_code_writes <= direct_code_writes + 1;
@@ -179,7 +201,7 @@ module tb_protected_mode #(
     wire instruction_boundary = dut.uc_is_rni && dut.uc_active;
     // The current instruction ran the HLTS bus cycle (it really halted).
     reg hlt_halted = 1'b0;
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (dut.i_issue && !dut.stall)
             hlt_halted <= 1'b0;
         else if (dut.uc_exec && dut.uc_buscode == 6'h3C)   // BUSOP_HLTS
@@ -243,7 +265,7 @@ module tb_protected_mode #(
     reg         walk_cr3_stale_r_d = 1'b0;
     longint     stale_walk_events = 0;
 
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (!reset_n) begin
             walk_cr3_stale_r_d <= 1'b0;
             stale_walk_events <= 0;
@@ -262,7 +284,7 @@ module tb_protected_mode #(
 
     // Snapshot-only CPU profiler. Attribute issue-to-issue time to the older
     // instruction and separately count mutually exclusive pipeline states.
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (reset_n && $test$plusargs("profile_cpu")) begin
             if (cpu_profile_active && (cpu_current_entry == 12'h013)) begin
                 if (dut.i_issue)
@@ -273,7 +295,7 @@ module tb_protected_mode #(
                     cpu_store_states[2] += 1;
                 else if (1'b0)
                     cpu_store_states[3] += 1;
-                else if (dut.throttle_parked_r)
+                else if (1'b0)
                     cpu_store_states[4] += 1;
                 else if (!dut.pb_valid)
                     cpu_store_states[5] += 1;
@@ -472,10 +494,10 @@ module tb_protected_mode #(
             cpu_stall_cycles[2] += !dut.stall_mem && !dut.stall_wio && 1'b0;
             cpu_stall_cycles[3] += !dut.stall_mem && !dut.stall_wio &&
                                    !1'b0 && dut.stall_x87_direct;
-            cpu_stall_cycles[4] += !dut.stall && dut.throttle_parked_r;
-            cpu_stall_cycles[5] += !dut.stall && !dut.throttle_parked_r &&
+            cpu_stall_cycles[4] += !dut.stall && 1'b0;
+            cpu_stall_cycles[5] += !dut.stall && !1'b0 &&
                                    !dut.uc_active && dut.decq_empty && !dut.pb_valid;
-            cpu_stall_cycles[6] += !dut.stall && !dut.throttle_parked_r &&
+            cpu_stall_cycles[6] += !dut.stall && !1'b0 &&
                                    !dut.uc_active && !(dut.decq_empty && !dut.pb_valid);
             cpu_stall_cycles[7] += dut.decoder_fetch_blocked;
             cpu_stall_cycles[8] += dut.mem_servicing;
@@ -484,7 +506,7 @@ module tb_protected_mode #(
                 cpu_entry_mem_stall[cpu_current_entry] += dut.stall_mem;
                 cpu_entry_x87_stall[cpu_current_entry] += dut.stall_x87_direct;
                 cpu_entry_frontend_wait[cpu_current_entry] +=
-                    !dut.stall && !dut.throttle_parked_r && !dut.uc_active;
+                    !dut.stall && !1'b0 && !dut.uc_active;
             end
 
             // Classify the cycle where a hardwired load can preload and chain its
@@ -538,7 +560,7 @@ module tb_protected_mode #(
         longint x87_event_window_direct = 0;
         longint x87_event_window_frontend = 0;
 
-        always @(posedge clk) begin
+        always @(posedge cclk) begin
             if (reset_n) begin
                 if ($test$plusargs("profile_x87_events")) begin
                     if (dut.i_issue) begin
@@ -586,7 +608,7 @@ module tb_protected_mode #(
                         x87_event_window_wio += dut.stall_wio;
                         x87_event_window_direct += dut.stall_x87_direct;
                         x87_event_window_frontend +=
-                            !dut.stall && !dut.throttle_parked_r &&
+                            !dut.stall && !1'b0 &&
                             !dut.uc_active;
                     end
                     if (dut.x87.gen_x87.cmd_valid &&
@@ -680,7 +702,7 @@ module tb_protected_mode #(
 
     // The 386-gate path clears the gate-width flag before common stack setup.
     reg cmisc2_executed = 1'b0;
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (!reset_n) begin
             cmisc2_executed <= 1'b0;
         end else begin
@@ -701,7 +723,7 @@ module tb_protected_mode #(
 
     // A load-to-AGI regression must both exercise the dependency and prevent
     // the dependent instruction from issuing while its EA input is pending.
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (reset_n && dut.d2_vipt_ea_hazard)
             vipt_ea_interlock_cycles <= vipt_ea_interlock_cycles + 1;
         if (reset_n && dut.i_issue && dut.d2_vipt_ea_hazard)
@@ -781,7 +803,7 @@ module tb_protected_mode #(
 
     // Count the issued native-flush instruction words (the INVD/WBINVD entry).
     longint     cache_flush_insn_count = 0;
-    always @(posedge clk)
+    always @(posedge cclk)
         if (reset_n && dut.uc_active && (dut.uc_addr == z486_pkg::UADDR_INVD))
             cache_flush_insn_count <= cache_flush_insn_count + 1;
 
@@ -789,7 +811,7 @@ module tb_protected_mode #(
     // drain plus both set walks.  cache_flush_busy rises for the platform
     // input and for INVD/WBINVD alike.
     reg         cache_flush_busy_r = 1'b0;
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (reset_n) begin
             cache_flush_busy_r <= cache_flush_busy;
             if (cache_flush_busy && !cache_flush_busy_r)
@@ -824,7 +846,7 @@ module tb_protected_mode #(
 
     wire cache_flush_platform = flush_stress_en ? flush_stress_level : cache_flush_req;
 
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (!reset_n) begin
             flush_stress_level <= 1'b0;
             flush_stress_timer <= 16'd0;
@@ -848,7 +870,7 @@ module tb_protected_mode #(
     // Cycles in which a held platform request overlaps the INVD/WBINVD routine;
     // +expect_flush_overlap requires at least one, so the test cannot pass
     // without actually creating the overlap it is meant to cover.
-    always @(posedge clk)
+    always @(posedge cclk)
         if (reset_n && flush_stress_en && cache_flush_platform &&
             dut.uc_active && (dut.uc_addr == z486_pkg::UADDR_INVD))
             flush_overlap_cycles <= flush_overlap_cycles + 1;
@@ -886,7 +908,7 @@ module tb_protected_mode #(
         count_rd_en = $value$plusargs("count_rd=%h", count_rd_addr);
         void'($value$plusargs("expect_rd_count=%d", expect_rd_count));
     end
-    always @(posedge clk)
+    always @(posedge cclk)
         if (reset_n && count_rd_en && valid && ready && !rd_busy && !write && !io &&
             ({addr, 2'b00} == {count_rd_addr[31:2], 2'b00}))
             rd_count_seen <= rd_count_seen + 1;
@@ -919,13 +941,13 @@ module tb_protected_mode #(
     int         max_lock_run = 0;
     int         lock_run = 0, lock_run_max = 0;
     initial void'($value$plusargs("max_lock_run=%d", max_lock_run));
-    always @(posedge clk) if (reset_n) begin
+    always @(posedge cclk) if (reset_n) begin
         lock_run <= bus_lock ? lock_run + 1 : 0;
         if (bus_lock && (lock_run + 1 > lock_run_max)) lock_run_max <= lock_run + 1;
     end
     // +trace_lock: every LOCK# edge and every bus cycle accepted while high.
     reg bus_lock_q = 1'b0;
-    always @(posedge clk) if (reset_n && $test$plusargs("trace_lock")) begin
+    always @(posedge cclk) if (reset_n && $test$plusargs("trace_lock")) begin
         bus_lock_q <= bus_lock;
         if (bus_lock != bus_lock_q)
             $display("LOCK# %0d @cycle %0d eip=%08x uc=%03h", bus_lock, cycle, dut.EIP, dut.uc_addr);
@@ -944,7 +966,8 @@ module tb_protected_mode #(
         // A platform flush request is a one-cycle pulse; the 0xC0 write handler
         // below re-asserts this assignment for the request cycle, and the cache
         // unit latches it internally for the walk.
-        cache_flush_req <= 1'b0;
+        // (held until the CPU's next enabled edge, where it samples the level)
+        if (cpu_ce) cache_flush_req <= 1'b0;
         xdma_snoop_valid <= 1'b0;
         if (async_flush_in > 1)
             async_flush_in <= async_flush_in - 1;
@@ -958,7 +981,7 @@ module tb_protected_mode #(
         if (async_stall > 0)
             async_stall <= async_stall - 1;
         if (xdma_en && reset_n && !xdma_done) begin
-            if (!xdma_armed && valid && ready && !rd_busy && !write && !io && !inta &&
+            if (!xdma_armed && valid && ready && !rd_busy && cpu_ce && !write && !io && !inta &&
                 ({addr, 2'b00} == {xdma_trig[31:2], 2'b00})) begin
                 xdma_seen <= xdma_seen + 1;
                 if (xdma_seen + 1 == xdma_trig_n) begin
@@ -997,7 +1020,10 @@ module tb_protected_mode #(
 
         // Pending whole-line fill: one 16-byte beat, then done.  The core's
         // S_FILL captures line_din on this pulse and installs all four words.
-        if (line_pending) begin
+        if (resp_backpressure) begin
+            // A response is waiting for the CPU's next enabled edge: present
+            // nothing new until it is consumed (cpu_pulse_hold's contract).
+        end else if (line_pending) begin
             if (line_wait_count == 1) begin
                 reg [127:0] lv;
                 reg [31:0]  lbase;
@@ -1047,7 +1073,7 @@ module tb_protected_mode #(
             rd_remaining <= rd_remaining - 8'd1;
         end
 
-        if (valid && ready && !rd_busy) begin
+        if (valid && ready && !rd_busy && cpu_ce) begin
             // Coprocessor cycles use reserved 32-bit I/O addresses. The normal
             // I/O trace intentionally truncates to programmed 16-bit ports,
             // which would alias these transactions with test-control ports.
@@ -1228,6 +1254,16 @@ module tb_protected_mode #(
                             $display("  TEST PASSED!");
                             $display("  Total cycles: %0d", cycle);
                             $display("  Total instructions: %0d", instruction_count);
+                            // +arch_digest: a hash of final memory, for
+                            // tests/test_throttle_invariance.py (the status
+                            // write is I/O, so posted stores have drained).
+                            if ($test$plusargs("arch_digest")) begin
+                                longint unsigned digest;
+                                digest = 64'hcbf29ce484222325;
+                                for (int unsigned a = 0; a < MEM_SIZE; a++)
+                                    digest = (digest ^ {56'd0, mem[a]}) * 64'h00000100000001b3;
+                                $display("ARCH_DIGEST memhash=%016x", digest);
+                            end
                             if (spec_check_en)
                                 $display("  SPEC CHECK: %0d seeded flushes checked, %0d skipped",
                                          spec_checked, spec_skipped);
@@ -1835,11 +1871,14 @@ module tb_protected_mode #(
         $display("");
     end
 
-    // Main test loop
-    always @(posedge clk) begin
-        if (reset_n) begin
-            cycle <= cycle + 1;
+    // Real time, in clk cycles (what the guest reads back on port 0xFC).
+    always @(posedge clk) if (reset_n) cycle <= cycle + 1;
 
+    // Main test loop (CPU time: the bench's interrupt and NMI placement counts
+    // the CPU's own clock edges, so a cycle-placed interrupt keeps its place in
+    // the instruction stream at every throttle setting)
+    always @(posedge cclk) begin
+        if (reset_n) begin
             if (triple_fault_reset && $test$plusargs("expect_triple_fault")) begin
                 $display("");
                 $display("========================================");
@@ -2223,14 +2262,14 @@ module tb_protected_mode #(
     // cycle late in the buffer. Neither is checked.
     reg [31:0] spec_pokes_seen = 0;
     bit        spec_ext_pending = 1'b0;
-    always @(posedge clk) begin
+    always @(posedge cclk) begin
         if (platform_dma_pokes != spec_pokes_seen) begin
             spec_pokes_seen <= platform_dma_pokes;
             spec_ext_pending <= 1'b1;
         end else if (dut.memory_inst.cache_unit_inst.cache_flush_done_r)
             spec_ext_pending <= 1'b0;
     end
-    always @(posedge clk) if (spec_check_en && reset_n && dut.prefetch_inst.spec_flush_hit) begin : spec_oracle
+    always @(posedge cclk) if (spec_check_en && reset_n && dut.prefetch_inst.spec_flush_hit) begin : spec_oracle
         logic [31:0] lin, phys, pde, pte;
         logic [127:0] line;
         logic ok;
@@ -2245,7 +2284,7 @@ module tb_protected_mode #(
         end
         if (!tb_a20)
             phys = phys & (PC98_MAP ? `Z486_PC98_A20_MASK_OFF : 32'hffef_ffff);
-        if (!ok || dut.mem_servicing || spec_ext_pending || xdma_snoop_valid ||
+        if (!ok || dut.mem_servicing || spec_ext_pending || snoop_valid_h ||
             dut.pf_snoop_kill_r ||
             (dut.memory_inst.cache_unit_inst.dcache_inst.storeq_count != 0) ||
             (dut.memory_inst.cache_unit_inst.dcache_inst.state != 3'd1)) begin   // S_IDLE

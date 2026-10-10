@@ -22,7 +22,6 @@ reset_sync reset_release (
 );
 
 z486_led_demo_soc #(
-    .CLOCK_RATE_MHZ(7'd100),
     .ENABLE_X87(ENABLE_X87),
     .FIRMWARE_HEX("blink.hex")
 ) demo (

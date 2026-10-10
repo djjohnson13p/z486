@@ -55,9 +55,7 @@ module z486
     // remain) and the TR6/TR7 TLB test port (TR3-TR7 remain readable and
     // writable).  Both default on for the 486SX feature level.
     parameter        ENABLE_HW_BREAKPOINTS = 1,
-    parameter        ENABLE_TLB_TEST = 1,
-
-    parameter [6:0] CLOCK_RATE_MHZ = 7'd85
+    parameter        ENABLE_TLB_TEST = 1
 )
 (
     input              clk,
@@ -104,8 +102,6 @@ module z486
 
     input              a20_enable,  // A20 gate input
 
-    // Architectural execution rate: 0=full, 1=15, 2=30, 3=56 MHz.
-    input       [1:0]  cpu_speed_sel,
     // Dev menu: run every instruction through the 386 microcode.
     input              fast_off_req,
     // Dev menu: L1 caches off (every access goes to memory).
@@ -603,7 +599,6 @@ wire       d2_push;                 // Decoder completed the resident D2 payload
 reg        d2_ea_split_done_r;      // D2a captured base + scaled index
 wire       d2_ea_split_wait;        // Three-term EA needs its D2a cycle
 wire       d2_ea_split_conflict;    // Its base/index is written on this edge
-reg        throttle_parked_r;       // predecessor retired; successor D2 waits for rate debt
 wire [11:0] issue_entry;            // Entry of the instruction issuing now
 wire        pb_load;                // Skeleton loads: ROM port B reads its entry
 wire [11:0] pb_load_entry;
@@ -714,17 +709,6 @@ wire       interrupt_deliverable = tf_trap_pending || nmi_request_active ||
                                    (intr_pending && EFLAGS[9] && !inhibit_interrupts);
 wire       interrupt_at_boundary = i_rni_delay && interrupt_deliverable && !single_step;
 
-// Fixed-clock CPU throttle.
-wire        throttle_hold;
-wire        throttle_release_ready;
-wire        throttle_full;
-// The throttle never splits a load/POP commit or a PUSH from its delay slot.
-wire        throttle_atomic_chain = recipe_state.hardwired && uc_active && i_rni &&
-    ((recipe_state.commit_sel == RECIPE_COMMIT_MEM) ||
-     ((recipe_state.commit_sel == RECIPE_COMMIT_ESP) && recipe_state.slot_has_work));
-// D2 launch overlaps the predecessor's last cycle or the final repayment cycle.
-wire        throttle_release_cycle = throttle_parked_r && throttle_release_ready;
-
 // An instruction occupies D2 exactly when ROM port B holds its first word.
 wire       d2_resident = pb_valid;
 // A trap, NMI or interrupt taken at this boundary cancels the D2 issue.
@@ -734,8 +718,7 @@ wire       boundary_take = i_rni_delay && !stall && !frontend_fault &&
      (intr_pending && EFLAGS[9] && !single_step && !inhibit_interrupts));
 wire       d2_payload_ready = d2_push && !d2_ea_split_wait;
 wire       d2_ready_base = d2_payload_ready && !stall &&
-                      (!throttle_hold || throttle_atomic_chain ||
-                       throttle_release_cycle) && !any_fault_issue &&
+                      !any_fault_issue &&
                       !(i_rni && tf_trap_pending && !single_step) &&
                       !interrupt_at_boundary && !q_flush &&
                       !d2_vipt_ea_hazard && !ibp_issue_hold;
@@ -799,7 +782,7 @@ wire       uc_slot_live = core_live && !(mem_servicing ? mem_block_busy : mem_bl
                  !stall_ucrd &&
                  !stall_wio && !stall_x87_direct && !stall_invlpg &&
                  !stall_fast_store && !stall_rmw_probe && !stall_cache_flush &&
-                 !throttle_parked_r && !recipe_slot_stale && !rmw_fallback_delay_r;
+                 !recipe_slot_stale && !rmw_fallback_delay_r;
 // A direct POP's first ROM word executes for its ESP write while the data
 // pipeline completes the load (the word's read is suppressed).
 assign uc_exec = uc_slot_live && (!vipt_load_exec_block || (pop_direct_r && i_first));
@@ -1401,7 +1384,6 @@ hardwired_control hardwired_control_inst (
     .any_fault(any_fault),
     .any_fault_r(any_fault_r),
     .any_fault_issue(any_fault_issue),
-    .throttle_hold(throttle_hold),
     .stall(stall),
     .load_pipe_issue(vipt_issue_load),
     .load_pipe_pop(vipt_issue_load && d2_vipt_pop),
@@ -1429,11 +1411,10 @@ hardwired_control hardwired_control_inst (
     .branch_redirect(branch_ustep_redirect)
 );
 
-// D2 residency and throttle state.
+// D2 residency state.
 always_ff @(posedge clk) begin
     if (!reset_n) begin
         d2_ea_split_done_r <= 1'b0;
-        throttle_parked_r <= 1'b0;
         stack_init_pending <= 1'b0;
         // Pulse state: never reset, so it starts X in simulation.
         i_first <= 1'b0;
@@ -1445,18 +1426,6 @@ always_ff @(posedge clk) begin
             d2_ea_split_done_r <= !d2_ea_split_conflict;
         else if (i_issue)
             d2_ea_split_done_r <= 1'b0;
-
-        // Every event that drops the resident word (an issue, a flush, a
-        // boundary event or an instruction-breakpoint #DB entry, which kill
-        // port B) also releases the park.
-        if (!d2_resident || i_issue || q_flush || any_fault ||
-            interrupt_at_boundary || interrupt_entry || throttle_full)
-            throttle_parked_r <= 1'b0;
-        else if (d2_resident && i_rni_delay && throttle_hold &&
-                 (uc_exec || recipe_slot_stale))
-            // Retire the predecessor's architectural delay slot on this edge,
-            // then keep the prefetched successor out of EX until release.
-            throttle_parked_r <= 1'b1;
 
         if (i_issue) begin
             i_first <= 1'b1;
@@ -2299,7 +2268,7 @@ wire iack_busop = uc_p_iack;        // IACK bus operation (interrupt acknowledge
 // rmw_fallback_delay_r keeps it inert (uc_exec is low): its bus operation
 // belongs to the execution that follows.
 assign mem_op_eligible = core_live && !mem_servicing && !recipe_slot_stale && !stall_ucrd &&
-                         !throttle_parked_r && !vipt_load_exec_block && !rmw_fallback_delay_r &&
+                         !vipt_load_exec_block && !rmw_fallback_delay_r &&
                          !(i_rni_delay && (d2_vipt_candidate || d2_vipt_rmw_candidate));
 // A failed protection test blocks bus operations in its delay slots.
 wire uc_data_busreq = !prot_redirect_prev &&
@@ -2901,7 +2870,6 @@ event_control #(.ENABLE_X87(ENABLE_X87)) event_control_inst (
     .i_rni_delay(i_rni_delay),
     .direct_wb_retire(direct_wb_retire),
     .rmw_fallback_delay_r(rmw_fallback_delay_r),
-    .throttle_parked_r(throttle_parked_r),
     .x87_direct_taken(x87_direct_taken),
     // Decoder: D2 entry and the EX instruction register
     .i_bus(i_bus),
@@ -3814,20 +3782,6 @@ interrupt_controller interrupts (
     .nmi_request_active(nmi_request_active),
     .interrupt_pending(interrupt_pending),
     .inhibit_interrupts(inhibit_interrupts)
-);
-
-wire throttle_active_cycle = (i_issue && !throttle_parked_r) ||
-                             (uc_active && !stall &&
-                              !throttle_parked_r);
-
-cpu_throttle #(.CLOCK_RATE_MHZ(CLOCK_RATE_MHZ)) throttle (
-    .clk(clk),
-    .reset_n(reset_n),
-    .speed_sel(cpu_speed_sel),
-    .active_cycle(throttle_active_cycle),
-    .hold(throttle_hold),
-    .release_cycle(throttle_release_ready),
-    .full_speed(throttle_full)
 );
 
 // synthesis translate_off

@@ -30,18 +30,26 @@ VERILATOR_EXE = Path(os.environ.get(
     "Z486_TESTBENCH", SCRIPT_DIR / "obj_dir/Vtb_protected_mode"
 ))
 
-# Throttle selector -> instruction-rate fraction of the unthrottled CPU, from
-# cpu_throttle.sv (target MHz / CLOCK_RATE_MHZ 85).  A throttled run is the
-# same program, only slower, so its cycle budget (and wall-clock limit) grows
-# by the inverse of that fraction, rounded up, plus one for the cycles the
-# throttle does not charge (memory and I/O stalls run unthrottled).
-THROTTLE_CYCLE_SCALE = {0: 1, 1: 7, 2: 4, 3: 3}
+# Throttle selector -> CPU clock-edge rate in kHz, mirroring cpu_throttle.sv's
+# rate_khz() (the bench prints the RTL's value at start-up and
+# test_throttle_rate.py checks this table against it).  The testbench's clk is
+# 85 MHz for this purpose (TB_CLOCK_KHZ).  A throttled run is the same program
+# with the CPU's clock gated, so its cycle budget (and wall-clock limit) grows
+# by the clock ratio, rounded up, plus one for the cycles that memory and I/O
+# add on the unthrottled side.
+THROTTLE_TB_KHZ = 85000
+THROTTLE_RATE_KHZ = {0: 0, 1: 33000, 2: 25000, 3: 16000, 4: 12000, 5: 8000,
+                     6: 6000, 7: 4000, 8: 3000, 9: 2000, 10: 1500, 11: 1000,
+                     12: 750, 13: 500}
+THROTTLE_CYCLE_SCALE = {sel: 1 if not khz else -(-THROTTLE_TB_KHZ // khz) + 1
+                        for sel, khz in THROTTLE_RATE_KHZ.items()}
+THROTTLE_CYCLE_SCALE.update({14: 1, 15: 1})   # reserved: full speed
 
 
 def throttle_setting(sim_args):
     """The +cpu_speed=N selector carried in SIM_PLUSARGS (0 = full speed)."""
     m = re.search(r'\+cpu_speed=(\d+)', sim_args)
-    return int(m.group(1)) & 3 if m else 0
+    return int(m.group(1)) & 15 if m else 0
 
 # I/O port results
 STATUS_PASS = 0x01
@@ -310,11 +318,6 @@ def run_simulation(test_name, test_config, hex_file, code_phys_base, verbose=Fal
     # makes a regression prove that its intended internal condition occurred.
     for extra in test_config.get('sim_plusargs', []):
         cmd.append(extra if extra.startswith('+') else f'+{extra}')
-    # Under the throttle, a program's cycle-placed interrupt keeps its place
-    # in the instruction stream (see THROTTLE_CYCLE_SCALE).
-    speed = throttle_setting(os.environ.get('SIM_PLUSARGS', ''))
-    if speed:
-        cmd.append(f"+signal_delay_scale={THROTTLE_CYCLE_SCALE[speed]}")
     cmd.append(f"+mem={hex_file}")
     cmd.append(f"+cycles={cycles}")
     cmd.append(f"+eip={test_config['eip']}")
