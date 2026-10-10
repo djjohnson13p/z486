@@ -36,6 +36,10 @@ module l1_cache #(
     output        cpu_wr_ready,   // a write may be presented (registered)
     output        cpu_resp_valid,
     output        stores_drained,
+    // A posted store (queued, or enqueuing from S_LOOKUP) lies in this line:
+    // the I-cache must not read the line from memory ahead of it.
+    input  [31:4] storeq_probe_line,
+    output        storeq_line_hit,
 
     // Accepted CPU stores are registered before S_LOOKUP.  Export that
     // registered payload for the instruction-cache coherence patch.
@@ -208,6 +212,7 @@ reg [STOREQ_IDX_BITS-1:0] storeq_head;
 reg [STOREQ_IDX_BITS-1:0] storeq_tail;
 reg [STOREQ_CNT_BITS-1:0] storeq_count;
 reg        storeq_draining;
+logic      storeq_line_hit_c;
 
 wire storeq_full = (storeq_count == STOREQ_DEPTH_VALUE);
 wire storeq_empty = (storeq_count == {STOREQ_CNT_BITS{1'b0}});
@@ -242,6 +247,19 @@ localparam [2:0] S_BYPASS_WAIT = 3'd4;
 localparam [2:0] S_NW_WRITE    = 3'd5;  // NW=1 store: enqueue only a miss
 
 reg [2:0] state;
+// A posted store in the line the I-cache is about to read from memory (the
+// queue, or the store enqueuing from S_LOOKUP). Memory does not hold it yet,
+// and the I$ patch queue only remembers the last three patches, so the fill
+// must wait for the drain (tests/programs/hz_patchq_overrun).
+always_comb begin
+    storeq_line_hit_c = (state == S_LOOKUP) && req_valid_r && req_write_r &&
+                        !req_protect_write_r &&
+                        (req_addr_r[31:4] == storeq_probe_line);
+    for (int k = 0; k < STOREQ_DEPTH; k++)
+        if (storeq_valid[k] && (storeq_addr[k][29:2] == storeq_probe_line))
+            storeq_line_hit_c = 1'b1;
+end
+assign storeq_line_hit = storeq_line_hit_c;
 reg [SET_BITS-1:0] init_set;
 reg [SET_BITS-1:0] snoop_set_r;
 reg snoop_valid_r;

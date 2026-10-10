@@ -80,6 +80,8 @@ module tb_l1_cache;
         .cpu_wr_ready(cpu_wr_ready),
         .cpu_resp_valid(cpu_resp_valid),
         .stores_drained(stores_drained),
+        .storeq_probe_line(28'h0),
+        .storeq_line_hit(),
         .vipt_probe_offset(vipt_probe_offset),
         .vipt_probe_valid(vipt_probe_valid),
         .vipt_probe_ready(vipt_probe_ready),

@@ -605,6 +605,8 @@ l1_cache #(
     .flush_done(dcache_flush_done),
     .cpu_resp_valid(dcache_cpu_resp_valid),
     .stores_drained(dcache_stores_drained),
+    .storeq_probe_line(icache_mem_addr[31:4]),
+    .storeq_line_hit(icache_fill_storeq_hit),
     .store_patch_addr(dcache_store_patch_addr),
     .store_patch_data(dcache_store_patch_data),
     .store_patch_be(dcache_store_patch_be),
@@ -635,6 +637,16 @@ l1_cache #(
     .cache_enable(cache_enable)
 );
 
+// An I-cache line read must not overtake a posted store into that line: the
+// fill would gather memory without the store, and the I$ patch queue that
+// covers stores memory has not seen holds only the last three patches, so a
+// burst of later stores elsewhere evicts it and the line installs stale
+// (tests/programs/hz_patchq_overrun). Hold the request off the bus until the
+// D-cache has drained that line; the D-cache already wins the bus first.
+logic icache_mem_valid_int;
+logic icache_fill_storeq_hit;
+assign icache_mem_valid = icache_mem_valid_int && !icache_fill_storeq_hit;
+
 l1_icache #(
     .SET_BITS(ICACHE_SET_BITS)
 ) icache_inst (
@@ -652,7 +664,7 @@ l1_icache #(
     .mem_burstcount(icache_mem_burstcount),
     .mem_busy(ext_valid_r || direct_rd_pending || dcache_read_pending ||
               dcache_mem_valid),
-    .mem_valid(icache_mem_valid),
+    .mem_valid(icache_mem_valid_int),
     .mem_ready(icache_mem_ready),
     .mem_resp_valid(icache_mem_resp_valid),
     .mem_line_resp_valid(icache_mem_line_resp_valid),
