@@ -1226,12 +1226,25 @@ always_ff @(posedge clk) begin
         pf_spec_cpl_r <= cpl;
 end
 wire        pf_spec_cpl_kill = pf_spec_cpl_r != cpl;
+// The A20 gate masks physical bit 20 after translation, so a linear line above
+// 1 MiB names a different physical line once it changes. The caches are tagged
+// after the mask; the buffered lines are not, so an edge of the gate kills
+// them (tests/programs/hz_spec_a20_rm). The edge is seen in the first cycle
+// the new value is presented, which also poisons a fetch launched then.
+reg         pf_spec_a20_r;
+always_ff @(posedge clk) begin
+    if (!reset_n)
+        pf_spec_a20_r <= 1'b1;   // a mismatch after reset is one harmless kill
+    else
+        pf_spec_a20_r <= a20_enable;
+end
+wire        pf_spec_a20_kill = pf_spec_a20_r != a20_enable;
 // INVLPG retires a translation exactly as a CR3 write does, so it kills the
 // buffered lines too (they are tagged by linear address and hold bytes fetched
 // through the old mapping; tests/programs/hz_invlpg_spec).
 assign pf_spec_global_kill = pf_snoop_kill_r || cr3_write || pf_spec_invlpg_kill ||
                              (uc_exec && (uc_dest == DEST_CR0)) ||
-                             pf_flush_kill_r || pf_spec_cpl_kill;
+                             pf_flush_kill_r || pf_spec_cpl_kill || pf_spec_a20_kill;
 
 //=============================================================================
 // Unit 2: Decode1 (structural decode)
