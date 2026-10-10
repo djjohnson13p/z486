@@ -128,6 +128,7 @@ module memory
     input              icache_req_valid,
     input      [31:0]  icache_req_phys_addr_raw,
     input              icache_req_is_pcd,
+    output             icache_req_is_no_alloc,
     output             icache_req_accepted, // Prefetch request ownership transferred
     output             icache_req_complete, // Full instruction line is valid
     output     [127:0] icache_rdata,
@@ -281,6 +282,7 @@ cache_unit #(
     .icache_req_valid(icache_req_valid),
     .icache_req_phys_addr_raw(icache_req_phys_addr_raw),
     .icache_req_is_pcd(icache_req_is_pcd),
+    .icache_req_is_no_alloc(icache_req_is_no_alloc),
     .icache_req_accepted(icache_req_accepted),
     .icache_req_complete(icache_req_complete),
     .icache_rdata(icache_rdata),

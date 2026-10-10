@@ -142,6 +142,7 @@ module paging_unit
     output logic        icache_req_valid,     // Prefetch request valid
     output logic [31:0] icache_req_phys_addr, // Prefetch physical address
     output logic        icache_req_is_pcd,    // The code page's PTE.PCD
+    input               icache_req_is_no_alloc, // Icache will not install this request's line (template NO_ALLOC)
     input               icache_req_accepted,  // Icache accepted request this cycle
     input               icache_req_complete,  // Icache read complete
     input       [127:0] icache_rdata,         // Icache read line
@@ -632,12 +633,16 @@ assign icache_req_is_pcd = icache_req_valid_r ? icache_req_pcd_r
                                               : (pg_enable && (pf_xlat_hit ? pf_xlat_pcd
                                                                            : tlb_is_pcd));
 // One prefetch line is outstanding at a time; its cacheability travels with
-// the response so the prefetcher's branch-target buffer can honor it.
+// the response so the prefetcher's branch-target buffer can honor it. The buffer
+// follows the I-cache's own allocation decision: a line the I-cache will not
+// install (NO_ALLOC template window: device/bank-switched/DMA memory that something
+// other than the CPU can change) is not retained either, so a branch back to it
+// refetches as on a 486, which has no target buffer.
 always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n)
         pf_nocache <= 1'b0;
     else if (icache_req_valid && icache_req_accepted)
-        pf_nocache <= icache_req_is_pcd || cr0[30];
+        pf_nocache <= icache_req_is_pcd || cr0[30] || icache_req_is_no_alloc;
 end
 
 // Keep the registered TLB lookup address on a dedicated write-enable path.

@@ -106,6 +106,9 @@ module cache_unit
     input  logic icache_req_valid,
     input  logic [31:0] icache_req_phys_addr_raw,
     input  logic icache_req_is_pcd,
+    // The I-cache's own NO_ALLOC verdict for the request (template window), so the
+    // prefetcher's branch-target buffer can refuse the same lines.
+    output logic icache_req_is_no_alloc,
     output logic icache_req_accepted,
     output logic icache_req_complete,
     output logic [127:0] icache_rdata,
@@ -216,7 +219,6 @@ localparam bit Z486_TEMPLATE_WINDOWS = VGA_ENABLE | APERTURE_ENABLE |
 
 // Quartus 17 rejects a user-enum-typed net; carry the class as a plain 2-bit vector.
 wire [1:0] dcache_vipt_class;
-wire icache_req_is_no_alloc;
 
 // The runtime cacheable-RAM bound: min(ram_cache_top, NO_ALLOC_BOUND) keeps the
 // L1-tag-reach check above as the hard ceiling; the runtime input can only tighten it.

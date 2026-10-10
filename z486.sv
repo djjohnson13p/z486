@@ -490,6 +490,7 @@ wire        dcache_req_is_locked;
 reg         bus_lock_r;             // LOCK# from a locked read until its stores drain
 wire        dcache_stores_drained_top;
 wire        icache_req_is_pcd;
+wire        icache_req_is_no_alloc;
 wire        dcache_req_accepted;
 wire        dcache_req_complete;
 wire        dcache_read_complete;
@@ -1026,6 +1027,7 @@ memory #(
     .icache_req_valid(icache_req_valid),
     .icache_req_phys_addr_raw(icache_req_phys_addr_raw),
     .icache_req_is_pcd(icache_req_is_pcd),
+    .icache_req_is_no_alloc(icache_req_is_no_alloc),
     .icache_req_accepted(icache_req_accepted),
     .icache_req_complete(icache_req_complete),
     .icache_rdata(icache_rdata),
@@ -2730,6 +2732,7 @@ paging_unit #(.VGA_BASE(VGA_BASE), .VGA_TOP(VGA_TOP)) paging_inst (
     .icache_req_valid   (icache_req_valid),
     .icache_req_phys_addr(icache_req_phys_addr_raw),
     .icache_req_is_pcd(icache_req_is_pcd),
+    .icache_req_is_no_alloc(icache_req_is_no_alloc),
     .icache_req_accepted(icache_req_accepted),
     .icache_req_complete(icache_req_complete),
     .icache_rdata       (icache_rdata),
