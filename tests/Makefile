@@ -538,8 +538,8 @@ test-protected-throttled: obj_dir/Vtb_protected_mode
 	SIM_PLUSARGS=+cpu_speed=3 ./test_protected_mode.py --strict
 
 test-pc98-map: obj_dir_pc98/Vtb_protected_mode
-	Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
-	SIM_PLUSARGS=+no_line_fill Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
+	Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
+	SIM_PLUSARGS=+no_line_fill Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
 
 BIGMEM_TESTS := hz_spec_a20_rm
 test-bigmem: obj_dir_bigmem/Vtb_protected_mode
