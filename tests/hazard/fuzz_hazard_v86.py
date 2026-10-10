@@ -478,6 +478,10 @@ def seed_job(seed, nops, irq, keep_dir):
         "fastoff": run_one(stem, cfg, base + ["+z486_fast_off"]),
         f"toggle{toggle}": run_one(stem, cfg, base + [f"+z486_fast_toggle={toggle}"]),
     }
+    # FUZZ_THROTTLE="2 5 7": also run at those CPU throttle settings (the CPU's
+    # clock gated, memory and I/O at full rate) against the same reference.
+    for sel in os.environ.get("FUZZ_THROTTLE", "").replace(",", " ").split():
+        res[f"thr{sel}"] = run_one(stem, cfg, base + [f"+cpu_speed={sel}"])
     if any(v != ref for v in res.values()) and keep_dir:
         Path(keep_dir).mkdir(parents=True, exist_ok=True)
         shutil.copy(stem.with_suffix(".asm"), Path(keep_dir) / f"fzv_{seed}.asm")

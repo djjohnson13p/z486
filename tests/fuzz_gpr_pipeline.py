@@ -14,6 +14,7 @@ about.  A mismatch prints the failing seed; rerun it with --seed N --keep.
     ./fuzz_gpr_pipeline.py --seed 17 --keep -v   # reproduce one
 """
 import argparse
+import os
 import random
 import sys
 from pathlib import Path
@@ -201,6 +202,8 @@ def gen(seed, n_insns, corrupt=False):
 
 
 def run_seed(seed, n_insns, latency, verbose, keep, plusargs=(), corrupt=False):
+    # (SIM_PLUSARGS=+cpu_speed=N runs the program with the CPU's clock gated)
+    scale = tpm.THROTTLE_CYCLE_SCALE[tpm.throttle_setting(os.environ.get('SIM_PLUSARGS', ''))]
     asm, data = gen(seed, n_insns, corrupt)
     work = tpm.TESTS_DIR / '.fuzz'
     work.mkdir(exist_ok=True)
@@ -229,7 +232,8 @@ def run_seed(seed, n_insns, latency, verbose, keep, plusargs=(), corrupt=False):
         lines[DATA + i] = f'{b:02X}'
     hexf.write_text('\n'.join(lines) + '\n')
     ok, failed, timeout, out = tpm.run_simulation(f'fuzz_{seed}', cfg, hexf, code_phys,
-                                                  verbose, False, cfg['cycles'])
+                                                  verbose, False, cfg['cycles'] * scale,
+                                                  wall_timeout=120 * scale)
     if not keep:
         for suf in ('.asm', '.bin', '.lst', '.hex'):
             stem.with_suffix(suf).unlink(missing_ok=True)

@@ -149,6 +149,7 @@ PLA4_RTL := $(Z486_DIR)/protection.sv
 
 .PHONY: check-equiv test-release test-pc98-map test-protected-narrow check-generators test-data-access check-runner test-l1-tags-wide test-reset-restart test-fuzz
 .PHONY: test-bigmem test-addr-unit-reloc test-reset-sweep test-pc98-map-bus test-mem-resp test-protected-throttled
+.PHONY: test-throttle-rate test-throttle-invariance test-fuzz-throttle test-throttle-sweep
 
 all: build
 
@@ -159,7 +160,7 @@ test-release:
 	$(MAKE) -j1 check-reset-lists check-pragmas check-rom-columns check-shift-ucode check-generators check-runner check-equiv
 	$(MAKE) -j1 test-l1-cache test-l1-icache test-memory-order test-mem-resp test-load-waw test-gpr-merge test-gpr-hazard test-data-access test-memmap-template test-interrupt-nmi test-paging-walker test-paging-tlb test-cache-flush test-cache-coherence test-reset-restart
 	$(MAKE) -j1 test-addr-unit-reloc test-reset-sweep test-pc98-map-bus
-	$(MAKE) -j1 test-protected test-protected-narrow test-protected-throttled test-simple test-pc98-map test-bigmem test-l1-tags-wide test-fuzz
+	$(MAKE) -j1 test-protected test-protected-narrow test-protected-throttled test-throttle-rate test-throttle-invariance test-fuzz-throttle test-simple test-pc98-map test-bigmem test-l1-tags-wide test-fuzz
 	$(MAKE) -j1 obj_dir_x87/Vtb_protected_mode
 	Z486_ENABLE_X87=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_x87/Vtb_protected_mode ./test_protected_mode.py --strict
 	$(MAKE) -j1 dhrystone
@@ -176,7 +177,7 @@ check-equiv:
 # three memory latencies each).  FUZZ_COUNT=200 for a longer soak.
 FUZZ_COUNT ?= 12
 test-fuzz: obj_dir/Vtb_protected_mode
-	./fuzz_gpr_pipeline.py --count $(FUZZ_COUNT)
+	python3 ./fuzz_gpr_pipeline.py --count $(FUZZ_COUNT)
 
 check-generators:
 	python3 $(Z486_DIR)/scripts/ucode_optimize.py --check
@@ -529,13 +530,46 @@ test-protected: obj_dir/Vtb_protected_mode
 test-protected-narrow: obj_dir/Vtb_protected_mode
 	SIM_PLUSARGS=+no_line_fill ./test_protected_mode.py --strict
 
-# A throttled CPU is the same CPU, only slower: the whole suite at each
-# throttle setting (the runner scales cycle budgets and cycle-placed
-# interrupts, and skips the programs that time themselves).
+# A throttled CPU is the same CPU seeing fewer clock edges (docs/throttle.md):
+# the whole suite at each throttle setting, the memory and I/O at full rate.
+# The runner scales cycle budgets and skips the programs that time themselves.
+THROTTLE_SELS ?= 3 7
 test-protected-throttled: obj_dir/Vtb_protected_mode
-	SIM_PLUSARGS=+cpu_speed=1 ./test_protected_mode.py --strict
-	SIM_PLUSARGS=+cpu_speed=2 ./test_protected_mode.py --strict
-	SIM_PLUSARGS=+cpu_speed=3 ./test_protected_mode.py --strict
+	for s in $(THROTTLE_SELS); do SIM_PLUSARGS=+cpu_speed=$$s ./test_protected_mode.py --strict; done
+
+# Throttled time is the requested time, a REP STOSD included.
+test-throttle-rate: obj_dir/Vtb_protected_mode
+	./test_throttle_rate.py
+
+# Every program's architectural result is identical to full speed at each
+# (throttle setting, memory latency).
+INVARIANCE_LATS ?= 1 9
+test-throttle-invariance: obj_dir/Vtb_protected_mode
+	./test_throttle_invariance.py --jobs $(JOBS) --sel $(THROTTLE_SELS) --lat $(INVARIANCE_LATS)
+
+# The fuzzers with throttle variants against the full-speed reference.
+FUZZ_THROTTLE ?= 3 9
+FUZZ_THROTTLE_COUNT ?= 4
+test-fuzz-throttle: obj_dir/Vtb_protected_mode
+	FUZZ_THROTTLE="$(FUZZ_THROTTLE)" python3 ./hazard/fuzz_hazard.py --count $(FUZZ_THROTTLE_COUNT) --jobs $(JOBS)
+	FUZZ_THROTTLE="$(FUZZ_THROTTLE)" python3 ./hazard/fuzz_hazard_v86.py --count $(FUZZ_THROTTLE_COUNT) --jobs $(JOBS)
+	FUZZ_THROTTLE="$(FUZZ_THROTTLE)" python3 ./hazard/fuzz_hazard_emm.py --count $(FUZZ_THROTTLE_COUNT) --jobs $(JOBS)
+	for s in $(FUZZ_THROTTLE); do SIM_PLUSARGS=+cpu_speed=$$s python3 ./fuzz_gpr_pipeline.py --count $(FUZZ_THROTTLE_COUNT); done
+
+# Volume run (not in test-release; run it on a big host): the suite and the
+# invariance bench over SWEEP_SELS x SWEEP_LATS, then the fuzzers over SWEEP_COUNT
+# seeds at every setting.  SWEEP_FIRST offsets the fuzz seeds between runs.
+SWEEP_SELS ?= 1 2 3 4 5 6 7 8 9 10 11 12 13
+SWEEP_LATS ?= 0 1 3 9 17 32
+SWEEP_COUNT ?= 200
+SWEEP_FIRST ?= 1
+test-throttle-sweep: obj_dir/Vtb_protected_mode
+	for s in $(SWEEP_SELS); do for l in $(SWEEP_LATS); do \
+	  SIM_PLUSARGS="+cpu_speed=$$s +mem_latency=$$l" ./test_protected_mode.py --strict || exit 1; done; done
+	./test_throttle_invariance.py --jobs $(JOBS) --sel $(SWEEP_SELS) --lat $(SWEEP_LATS)
+	FUZZ_THROTTLE="$(SWEEP_SELS)" python3 ./hazard/fuzz_hazard.py --count $(SWEEP_COUNT) --first $(SWEEP_FIRST) --jobs $(JOBS)
+	FUZZ_THROTTLE="$(SWEEP_SELS)" python3 ./hazard/fuzz_hazard_v86.py --count $(SWEEP_COUNT) --first $(SWEEP_FIRST) --jobs $(JOBS)
+	FUZZ_THROTTLE="$(SWEEP_SELS)" python3 ./hazard/fuzz_hazard_emm.py --count $(SWEEP_COUNT) --first $(SWEEP_FIRST) --jobs $(JOBS)
 
 test-pc98-map: obj_dir_pc98/Vtb_protected_mode
 	Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
@@ -723,7 +757,11 @@ help:
 	@echo "  make test-release  - Run all self-contained release gates"
 	@echo "  make test-pc98-map - Execute/modify code in PC-98 DIRECT/NO_ALLOC windows"
 	@echo "  make test-pc98-map-bus - Check each PC-98 window's external-port access shape"
-	@echo "  make test-protected-throttled - The protected suite at throttle settings 1, 2 and 3"
+	@echo "  make test-protected-throttled - The protected suite at THROTTLE_SELS (docs/throttle.md)"
+	@echo "  make test-throttle-rate      - Throttled time is the requested time, REP included"
+	@echo "  make test-throttle-invariance - Results identical to full speed at each throttle setting and latency"
+	@echo "  make test-fuzz-throttle      - The fuzzers with throttle variants"
+	@echo "  make test-throttle-sweep     - The volume run (suite, invariance, fuzzers)"
 	@echo "  make test-mem-resp - Line fills and direct reads answered in, or after, their accept cycle"
 	@echo "  make test-addr-unit-reloc - address_unit relocation vs independent arithmetic"
 	@echo "  make test-reset-sweep - One-cycle reset at every offset through a program"

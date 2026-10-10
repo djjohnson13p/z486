@@ -386,12 +386,13 @@ def config(name, lat):
 
 
 def run_one(stem, cfg, plus):
+    scale = tpm.THROTTLE_CYCLE_SCALE[tpm.throttle_setting(" ".join(plus))]
     old = os.environ.get("SIM_PLUSARGS")
     os.environ["SIM_PLUSARGS"] = " ".join(["+trace_io"] + plus)
     try:
         ok, failed, timeout, out = tpm.run_simulation(stem.name, cfg, stem.with_suffix(".hex"),
-                                                      CODE_BASE, False, False, cfg["cycles"],
-                                                      wall_timeout=900)
+                                                      CODE_BASE, False, False, cfg["cycles"] * scale,
+                                                      wall_timeout=900 * scale)
     finally:
         if old is None:
             os.environ.pop("SIM_PLUSARGS", None)
@@ -429,6 +430,10 @@ def seed_job(seed, nops, keep_dir, rmw=False, extra=""):
         "fastoff": run_one(stem, cfg, base + ["+z486_fast_off"]),
         f"toggle{toggle}": run_one(stem, cfg, base + [f"+z486_fast_toggle={toggle}"]),
     }
+    # FUZZ_THROTTLE="2 5 7": also run at those CPU throttle settings (the CPU's
+    # clock gated, memory and I/O at full rate) against the same reference.
+    for sel in os.environ.get("FUZZ_THROTTLE", "").replace(",", " ").split():
+        res[f"thr{sel}"] = run_one(stem, cfg, base + [f"+cpu_speed={sel}"])
     bad = {k: v for k, v in res.items() if v != ref}
     if bad and keep_dir:
         Path(keep_dir).mkdir(parents=True, exist_ok=True)
