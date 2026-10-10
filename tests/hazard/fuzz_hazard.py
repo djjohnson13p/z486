@@ -22,7 +22,12 @@ branch-target buffer, VIPT, patch queue or store-to-load sharing); each variant
 (fast paths on; fast off with caches on; fast paths toggled at random) must
 report the same EBX at the same memory latency.
 
-  fuzz_hazard.py --count N [--first S] [--jobs J] [--ops K] [--keep-fail DIR]
+  fuzz_hazard.py --count N [--first S] [--jobs J] [--ops K] [--keep-fail DIR] [--rmw]
+
+--rmw makes 70% of the operations read-modify-write storms (ADD/OR/AND/XOR/SUB/ADC/
+XCHG/INC/DEC/NOT/NEG [mem] in byte/word/dword form, LOCK-prefixed, across a line or a
+page boundary, absolute or register-based, with a load / store / cold fill / second RMW
+placed immediately before so the RMW's first micro-step can stall after its probe).
 
 Prints one line per seed and a summary; exit 1 on any mismatch.
 """
@@ -66,7 +71,8 @@ def cs_off(lin):
 
 
 class Gen:
-    def __init__(self, seed, nops):
+    def __init__(self, seed, nops, rmw=False):
+        self.rmw = rmw
         self.r = random.Random(seed)
         self.L = []
         self.lbl = 0
@@ -145,8 +151,83 @@ class Gen:
         self.e("cmp esp, esp")
         self.e(f"jne {cs_off(self.f_addr(i, self.r.random() < 0.3)):#x}")
 
+    def rmw_addr(self):
+        """Address for an RMW: aligned, line-crossing, or page-crossing."""
+        r = self.r
+        k = r.randrange(10)
+        if k < 4:
+            return HOT + (r.randrange(0, 0xfc) & ~3)
+        if k < 7:                                    # straddles a 16-byte line
+            return HOT + 16 * r.randrange(1, 15) - r.randrange(1, 4)
+        if k < 9:                                    # straddles a page (data page, remapped)
+            return DP_LIN + 0x1000 - r.randrange(1, 4)
+        return DP_LIN + 4 * r.randrange(1024)
+
+    def rmw_insn(self, a):
+        r = self.r
+        sz = r.choice(["dword", "dword", "dword", "word", "byte"])
+        reg = {"dword": "ebx", "word": "bx", "byte": "bl"}[sz]
+        form = r.randrange(4)
+        if form == 0:
+            mem = f"[{a:#x}]"
+        elif form == 1:
+            self.e(f"mov esi, {a:#x}")
+            mem = "[esi]"
+        elif form == 2:
+            self.e(f"mov esi, {a - 8:#x}")
+            mem = "[esi+8]"
+        else:
+            self.e(f"mov esi, {(a - 4 * 3) & 0xffffffff:#x}")
+            self.e("mov edx, 3")
+            mem = "[esi+edx*4]"
+        pre = "lock " if r.random() < 0.2 else ""
+        op = r.choice(["add", "or", "and", "xor", "sub", "adc", "sbb", "xchg", "inc", "dec",
+                       "not", "neg", "addi", "ori"])
+        if op in ("inc", "dec", "not", "neg"):
+            self.e(f"{pre}{op} {sz} {mem}")
+        elif op == "xchg":
+            self.e(f"{pre}xchg {mem}, {reg}")
+        elif op in ("addi", "ori"):
+            self.e(f"{pre}{op[:-1]} {sz} {mem}, {r.randrange(1, 100)}")
+        else:
+            self.e(f"{pre}{op} {mem}, {reg}")
+
+    def rmw_storm(self):
+        r = self.r
+        a = self.rmw_addr()
+        ctx = r.randrange(9)
+        if ctx == 1:                                  # an older load still in flight
+            self.e(f"mov eax, [{HOT + 4 * r.randrange(64):#x}]")
+        elif ctx == 2:                                # an older store (patch slot / queue)
+            self.e(f"mov [{HOT + 4 * r.randrange(64):#x}], ecx")
+            self.e(f"mov [{HOT + 4 * r.randrange(64):#x}], ecx")
+        elif ctx == 3 and self.cold < 0xbf00:         # a cold fill (memory latency)
+            self.e(f"mov eax, [{COLD + self.cold:#x}]")
+            self.cold += 0x40
+        elif ctx == 4:                                # a back-to-back RMW
+            self.e(f"add [{HOT + 4 * r.randrange(64):#x}], ebx")
+        elif ctx == 5:                                # a store to the RMW's own word
+            self.e(f"mov [{a & ~3:#x}], ebx")
+        elif ctx == 6:                                # a crossing store, paging path
+            self.e(f"mov [{HOT + 16 * r.randrange(1, 15) - 2:#x}], ebx")
+        elif ctx == 7:
+            self.e("mov eax, cr3")
+            self.e("mov cr3, eax")
+        for _ in range(r.choice([0, 0, 0, 1, 2])):
+            self.e("nop")
+        for _ in range(r.choice([1, 1, 2, 3])):       # the RMW (and back-to-back ones)
+            self.rmw_insn(a if r.random() < 0.7 else self.rmw_addr())
+        if r.random() < 0.7:
+            self.e(f"mov eax, [{a & ~3:#x}]")
+            self.fold()
+        if r.random() < 0.1:
+            self.e("wbinvd")
+
     def op(self):
         r = self.r
+        if self.rmw and r.random() < 0.7:
+            self.rmw_storm()
+            return
         k = r.randrange(100)
         if k < 22:                                   # SMC into a function, then use it
             i = r.randrange(NF)
@@ -325,14 +406,14 @@ def run_one(stem, cfg, plus):
     return m[-1].lower() if m else "NONE"
 
 
-def seed_job(seed, nops, keep_dir):
+def seed_job(seed, nops, keep_dir, rmw=False, extra=""):
     r = random.Random(seed * 7919 + 1)
     lat = r.choice(list(range(0, 33)))
     narrow = r.random() < 0.3
     toggle = r.choice([37, 101, 257, 997])
     work = Path(tempfile.mkdtemp(prefix=f"fzh_{seed}_"))
     stem = work / f"fzh_{seed}"
-    asm = Gen(seed, nops).program()
+    asm = Gen(seed, nops, rmw).program()
     stem.with_suffix(".asm").write_text(asm)
     cfg = config(stem.name, lat)
     if not tpm.assemble(stem.with_suffix(".asm"), stem.with_suffix(".bin"),
@@ -341,7 +422,7 @@ def seed_job(seed, nops, keep_dir):
     tpm.build_memory_image(cfg, stem.with_suffix(".bin"), stem.with_suffix(".hex"))
     # +spec_check: the bench's branch-target buffer oracle (a stale seeded line
     # is a $fatal, i.e. a FATAL result, even when the checksum survives it).
-    base = [f"+mem_latency={lat}", "+spec_check"] + (["+no_line_fill"] if narrow else [])
+    base = [f"+mem_latency={lat}", "+spec_check"] + (["+no_line_fill"] if narrow else []) + extra.split()
     ref = run_one(stem, cfg, base + ["+z486_fast_off", "+z486_cache_off"])
     res = {
         "fast": run_one(stem, cfg, base),
@@ -365,6 +446,8 @@ def main():
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--ops", type=int, default=400)
     ap.add_argument("--keep-fail", default="")
+    ap.add_argument("--extra", default="", help="extra plusargs for every run, e.g. '+cpu_speed=2'")
+    ap.add_argument("--rmw", action="store_true", help="RMW-heavy operation mix")
     a = ap.parse_args()
     if a.jobs > 8 and not os.environ.get("FUZZ_ALLOW_WIDE"):
         print("--jobs capped at 8 (set FUZZ_ALLOW_WIDE=1 on a dedicated host)")
@@ -372,7 +455,7 @@ def main():
     bad = 0
     n = 0
     with cf.ProcessPoolExecutor(max_workers=a.jobs) as ex:
-        futs = [ex.submit(seed_job, s, a.ops, a.keep_fail)
+        futs = [ex.submit(seed_job, s, a.ops, a.keep_fail, a.rmw, a.extra)
                 for s in range(a.first, a.first + a.count)]
         for f in cf.as_completed(futs):
             seed, desc, ref, res = f.result()
