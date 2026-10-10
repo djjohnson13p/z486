@@ -1,0 +1,51 @@
+{
+  "asm": "hz_vipt_share_unposted.asm",
+  "start_mode": "protected",
+  "cr0": "0x11",
+  "cr3": 0,
+  "eip": 0,
+  "seg_cache": {
+    "CS": {
+      "base": "0x10000",
+      "limit": "0xfffff",
+      "flags": "0xa9e0"
+    },
+    "DS": {
+      "base": 0,
+      "limit": "0xfffff",
+      "flags": "0x29e0"
+    },
+    "SS": {
+      "base": 0,
+      "limit": "0xfffff",
+      "flags": "0x29e0"
+    },
+    "ES": {
+      "base": 0,
+      "limit": "0xfffff",
+      "flags": "0x29e0"
+    },
+    "FS": {
+      "base": 0,
+      "limit": "0xfffff",
+      "flags": "0x29e0"
+    },
+    "GS": {
+      "base": 0,
+      "limit": "0xfffff",
+      "flags": "0x29e0"
+    }
+  },
+  "page_tables": [],
+  "cycles": 100000,
+  "sim_plusargs": [
+    "expect_xdma",
+    "xdma_trig=5100",
+    "xdma_addr=5200",
+    "xdma_data=0",
+    "xdma_snoop",
+    "no_line_fill",
+    "xdma_delay=35"
+  ],
+  "mem_latency": 3
+}
