@@ -681,6 +681,7 @@ wire        pf_spec_store;
 wire [11:4] pf_spec_store_line;
 wire        pf_spec_store_cross;
 wire        pf_spec_global_kill;
+wire        pf_spec_invlpg_kill;
 wire        prot_redirect_prev;
 wire        prot_redirect_taken;
 
@@ -1225,7 +1226,10 @@ always_ff @(posedge clk) begin
         pf_spec_cpl_r <= cpl;
 end
 wire        pf_spec_cpl_kill = pf_spec_cpl_r != cpl;
-assign pf_spec_global_kill = pf_snoop_kill_r || cr3_write ||
+// INVLPG retires a translation exactly as a CR3 write does, so it kills the
+// buffered lines too (they are tagged by linear address and hold bytes fetched
+// through the old mapping; tests/programs/hz_invlpg_spec).
+assign pf_spec_global_kill = pf_snoop_kill_r || cr3_write || pf_spec_invlpg_kill ||
                              (uc_exec && (uc_dest == DEST_CR0)) ||
                              pf_flush_kill_r || pf_spec_cpl_kill;
 
@@ -2037,6 +2041,7 @@ wire invlpg_request = invlpg_active && !invlpg_priv_fault;
 wire invlpg_ack;
 // Waiting for an older page walk does not depend on seg_fault.
 assign stall_invlpg = invlpg_active && !invlpg_priv_fault && !invlpg_ack;
+assign pf_spec_invlpg_kill = invlpg_request && invlpg_ack;   // the TLB invalidate cycle
 
 // 486 INVD (0F 08) / WBINVD (0F 09): a native whole-L1 flush.  The decoder
 // registers the entry action like INVLPG's, so neither the entry address nor a
