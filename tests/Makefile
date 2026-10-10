@@ -148,7 +148,7 @@ PLA4_RTL := $(Z486_DIR)/protection.sv
 .PHONY: all build test-simple test-full test-386 test-186 test-protected test-pla4 test-l1-cache test-l1-icache test-memory-order test-cache-coherence test-load-waw test-gpr-hazard test-gpr-merge test-memmap-template check-reset-lists check-pragmas check-rom-columns check-shift-ucode test-interrupt-nmi test-paging-walker test-paging-tlb test-cache-flush test-x87-bridge test-x87-sequencer test-x87-executor test-x87-testfloat test-x87-fifo test-x87-core test-x87-integration test-x87-integer dhrystone clean help
 
 .PHONY: check-equiv test-release test-pc98-map test-protected-narrow check-generators test-data-access check-runner test-l1-tags-wide test-reset-restart test-fuzz
-.PHONY: test-addr-unit-reloc test-reset-sweep test-pc98-map-bus test-mem-resp test-protected-throttled
+.PHONY: test-bigmem test-addr-unit-reloc test-reset-sweep test-pc98-map-bus test-mem-resp test-protected-throttled
 
 all: build
 
@@ -159,7 +159,7 @@ test-release:
 	$(MAKE) -j1 check-reset-lists check-pragmas check-rom-columns check-shift-ucode check-generators check-runner check-equiv
 	$(MAKE) -j1 test-l1-cache test-l1-icache test-memory-order test-mem-resp test-load-waw test-gpr-merge test-gpr-hazard test-data-access test-memmap-template test-interrupt-nmi test-paging-walker test-paging-tlb test-cache-flush test-cache-coherence test-reset-restart
 	$(MAKE) -j1 test-addr-unit-reloc test-reset-sweep test-pc98-map-bus
-	$(MAKE) -j1 test-protected test-protected-narrow test-protected-throttled test-simple test-pc98-map test-l1-tags-wide test-fuzz
+	$(MAKE) -j1 test-protected test-protected-narrow test-protected-throttled test-simple test-pc98-map test-bigmem test-l1-tags-wide test-fuzz
 	$(MAKE) -j1 obj_dir_x87/Vtb_protected_mode
 	Z486_ENABLE_X87=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_x87/Vtb_protected_mode ./test_protected_mode.py --strict
 	$(MAKE) -j1 dhrystone
@@ -200,6 +200,13 @@ obj_dir/Vtb_protected_mode: $(RTL_SRCS) $(RTL_DEPS) $(TB_PROT_SRCS) $(TB_PROT_DE
 obj_dir_pc98/Vtb_protected_mode: $(RTL_SRCS) $(RTL_DEPS) $(TB_PROT_SRCS) $(TB_PROT_DEPS) $(CPP_PROT_SRCS)
 	cp -f ../*.hex .
 	$(VERILATOR) $(VFLAGS) --Mdir obj_dir_pc98 -GPC98_MAP=1 -GMEM_SIZE=1048576 --top-module tb_protected_mode \
+		$(TB_PROT_SRCS) $(RTL_SRCS) $(CPP_PROT_SRCS)
+
+# 4 MiB of bench memory, so a line above 1 MiB has its own backing and an A20
+# change is visible in the data (the 512 KiB benches wrap 0x100000 onto 0).
+obj_dir_bigmem/Vtb_protected_mode: $(RTL_SRCS) $(RTL_DEPS) $(TB_PROT_SRCS) $(TB_PROT_DEPS) $(CPP_PROT_SRCS)
+	cp -f ../*.hex .
+	$(VERILATOR) $(VFLAGS) --Mdir obj_dir_bigmem -GMEM_SIZE=4194304 --top-module tb_protected_mode \
 		$(TB_PROT_SRCS) $(RTL_SRCS) $(CPP_PROT_SRCS)
 
 obj_dir_x87/Vtb_protected_mode: $(RTL_SRCS) $(RTL_DEPS) $(TB_PROT_SRCS) $(TB_PROT_DEPS) $(CPP_PROT_SRCS)
@@ -533,6 +540,11 @@ test-protected-throttled: obj_dir/Vtb_protected_mode
 test-pc98-map: obj_dir_pc98/Vtb_protected_mode
 	Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
 	SIM_PLUSARGS=+no_line_fill Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
+
+BIGMEM_TESTS := hz_spec_a20_rm
+test-bigmem: obj_dir_bigmem/Vtb_protected_mode
+	Z486_BIGMEM=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_bigmem/Vtb_protected_mode ./test_protected_mode.py --strict $(BIGMEM_TESTS)
+	SIM_PLUSARGS=+z486_fast_off Z486_BIGMEM=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_bigmem/Vtb_protected_mode ./test_protected_mode.py --strict $(BIGMEM_TESTS)
 
 test-386: obj_dir/Vtb_test386
 	@echo "Running test386.asm..."

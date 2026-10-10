@@ -530,6 +530,18 @@ Examples:
         tests_to_run = [name for name in tests_to_run
                        if not TESTS[name].get("requires_pc98_map", False)]
 
+    # A program that needs bench memory above 1 MiB (an A20 alias with its own
+    # backing) runs only on obj_dir_bigmem (`make test-bigmem`).
+    if os.environ.get("Z486_BIGMEM") != "1":
+        requested_big = [name for name in tests_to_run
+                         if TESTS[name].get("requires_bigmem", False)]
+        if args.tests and requested_big:
+            print("Error: test(s) need the 4 MiB testbench (`make test-bigmem`): "
+                  + ", ".join(requested_big))
+            return 1
+        tests_to_run = [name for name in tests_to_run
+                        if not TESTS[name].get("requires_bigmem", False)]
+
     if args.strict:
         expected = [name for name in tests_to_run if TESTS[name].get('expect_fail')]
         if expected:
