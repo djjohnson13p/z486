@@ -192,14 +192,72 @@ class Gen:
                 self.e(f"mov [{a:#x}], bx")
                 self.e(f"mov ax, [{a:#x}]")
                 self.fold()
-        elif k < 94:                                  # cold line (FS = 0x4000)
+        elif k < 90:                                  # cold line (FS = 0x4000)
             if self.cold < 0xff00:
                 self.e(f"mov ax, [fs:{self.cold:#x}]")
                 self.cold += 0x40
                 self.fold()
         else:
-            self.e(f"call {F_OFF + 6 * r.randrange(NF):#x}")
-            self.fold()
+            self.branchy()
+
+    def branchy(self):
+        """Data-dependent control flow: taken and not-taken Jcc (short and
+        near, folded beside CMP/TEST), counted back edges (DEC/JNZ, LOOP),
+        JCXZ, JMP SHORT, direct and indirect near calls and RET imm16."""
+        r = self.r
+        base = self.lab()
+        nl = r.randrange(3, 7)
+        labs = [f"{base}_{i}" for i in range(nl)] + [f"{base}_end"]
+        self.e("xor dx, dx")
+        for i in range(nl):
+            self.G.append(f"{labs[i]}:")
+            fwd = r.choice(labs[i + 1:])
+            k = r.randrange(8)
+            if k == 0:
+                self.e(f"mov ax, [{2 * r.randrange(0x80):#x}]")
+                self.e(f"test ax, {1 << r.randrange(16):#x}")
+                self.e(f"{r.choice(['jz', 'jnz', 'js', 'jns', 'jp', 'jnp'])} {fwd}")
+                self.e("add dx, ax")
+            elif k == 1:
+                self.e(f"mov ax, [{2 * r.randrange(0x80):#x}]")
+                self.e(f"cmp ax, {self.r16():#x}")
+                self.e(f"{r.choice(['jb', 'jae', 'jl', 'jge', 'jbe', 'ja'])} near {fwd}")
+                self.e("xor dx, ax")
+            elif k == 2:
+                lp = self.lab()
+                self.e(f"mov cx, {r.randrange(1, 5)}")
+                self.G.append(f"{lp}:")
+                self.e(f"add dx, [{2 * r.randrange(0x80):#x}]")
+                self.e(f"loop {lp}")
+            elif k == 3:
+                lp = self.lab()
+                self.e(f"mov si, {r.randrange(1, 5)}")
+                self.G.append(f"{lp}:")
+                self.e("rol dx, 3")
+                self.e("dec si")
+                self.e(f"jnz {lp}")
+            elif k == 4:
+                self.e(f"mov cx, {r.randrange(2)}")
+                self.e(f"jcxz {fwd}")
+                self.e("inc dx")
+            elif k == 5:
+                sub = self.lab()
+                self.e(f"call {sub}")
+                self.e(f"jmp short {sub}_x")
+                self.G.append(f"{sub}:")
+                self.e(f"add dx, {self.r16():#x}")
+                self.e("ret 0" if r.random() < 0.5 else "ret")
+                self.G.append(f"{sub}_x:")
+            elif k == 6:
+                self.e(f"mov si, {F_OFF + 6 * r.randrange(NF):#x}")
+                self.e("call si")
+                self.e("add dx, ax")
+            else:
+                self.e(f"jmp short {fwd}")
+                self.e("inc dx")
+        self.G.append(f"{labs[-1]}:")
+        self.e("mov ax, dx")
+        self.fold()
 
     def program(self, irq):
         r = self.r
