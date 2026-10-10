@@ -587,8 +587,15 @@ wire vipt_probe_fire = vipt_probe_valid &&
 // its RAM address is also the exact VIPT lookup address. Share that read
 // instead of rejecting and replaying the younger instruction. Demand reads
 // retain exclusive priority and the existing replay contract.
+// The store must be ACCEPTED in this cycle: the shared read predates its
+// bytes, which vipt_lookup_store_match merges only once it is in S_LOOKUP. A
+// store held off here (a busy I$ patch slot, a full queue) would otherwise
+// leave the probe resolving the pre-store value
+// (tests/programs/hz_vipt_share_unposted). The acceptance term reaches only
+// the CPU's probed-flag flops, not D2 issue.
 wire vipt_probe_share = vipt_probe_valid && cpu_preread_priority &&
                         idle_preread && cpu_write &&
+                        cpu_valid && cpu_ready && can_accept_cpu &&
                         (vipt_probe_set == cpu_preread_set) &&
                         (vipt_probe_word == cpu_preread_word);
 assign vipt_probe_accepted = vipt_probe_fire || vipt_probe_share;
@@ -1045,6 +1052,8 @@ always_ff @(posedge clk) begin
 end
 
 // synthesis translate_off
+reg vipt_probe_share_r = 1'b0;
+always_ff @(posedge clk) vipt_probe_share_r <= !reset && vipt_probe_share;
 always_ff @(posedge clk) begin
     if (!reset && state != S_RESET_INIT && cpu_valid && !cpu_ready && !(state == S_IDLE))
         ;
@@ -1054,6 +1063,11 @@ always_ff @(posedge clk) begin
     // legal finalize state rather than a cache ownership collision. A
     // protected (ROM-window) store leaves S_LOOKUP without touching the RAM
     // and is not forwarded, so the probe reads the unchanged data.
+    // A resolve that used a shared preread must find that store in S_LOOKUP,
+    // where vipt_lookup_store_match merges its bytes over the older read.
+    if (!reset && vipt_resolve_valid && vipt_probe_share_r &&
+        !(state == S_LOOKUP && req_valid_r && req_write_r))
+        $fatal(1, "VIPT resolve of a shared preread without its store in S_LOOKUP");
     if (!reset && vipt_resolve_valid && state != S_IDLE &&
         !(state == S_LOOKUP && req_valid_r && req_write_r) &&
         !(state == S_NW_WRITE))
