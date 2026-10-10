@@ -629,6 +629,21 @@ always_ff @(posedge clk) begin
 end
 // synthesis translate_on
 
+// synthesis translate_off
+// The preread registers in the L1 are reloaded on every idle cycle, so an
+// RMW's resolve is only valid the cycle after its OWN accepted probe. A
+// finish with a probed flag set but no such probe the cycle before would
+// consume another access's preread.
+reg rd_fast_own_probe_q;
+always_ff @(posedge clk) begin
+    rd_fast_own_probe_q <= reset_n && !q_flush && !any_fault &&
+        ((vipt_issue_rmw && dcache_vipt_probe_accepted) ||
+         (rmw_replay_try && dcache_vipt_probe_direct_accepted));
+    if (reset_n && rd_fast_finish && rd_fast_probed_r && !rd_fast_own_probe_q)
+        $fatal(1, "RMW FIRST-USTEP FINISH WITHOUT ITS OWN PROBE");
+end
+// synthesis translate_on
+
 // RD_FAST finalizes the D2 preread in the overlay entry uStep. A hit commits
 // the formatted operand to normal OPR_R and retains only the write-qualified
 // physical identity. A reject has no architectural side effect and redirects
