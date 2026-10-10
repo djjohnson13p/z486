@@ -629,11 +629,15 @@ always_ff @(posedge clk or negedge reset_n) begin
                 spec_b_line <= spec_line;
                 spec_b_valid <= spec_valid && !spec_poison;
             end else begin
-                // Keep the line being replaced as the victim.
+                // Keep the line being replaced as the victim - unless a store
+                // or a global kill lands on it in this same cycle: spec_kill
+                // below clears only the ACTIVE slot, so a victim copied here
+                // would keep the pre-store bytes and a later swap would run
+                // them (tests/programs/smc_spec_demote_rm).
                 if (spec_valid && !spec_poison && !spec_inflight) begin
                     spec_b_addr <= spec_addr;
                     spec_b_line <= spec_line;
-                    spec_b_valid <= 1'b1;
+                    spec_b_valid <= !spec_kill;
                 end
                 spec_pend <= 1'b1;
                 spec_pend_addr <= spec_linear;
