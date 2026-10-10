@@ -129,6 +129,10 @@ module tb_protected_mode #(
     // The regular tests use 512KB. Snapshot replay overrides this parameter
     // with the captured physical-memory size.
     reg [7:0] mem [0:MEM_SIZE-1];
+    // +spec_check (the branch-target buffer oracle, near the end of this file)
+    bit          spec_check_en;
+    int unsigned spec_checked = 0, spec_skipped = 0;
+    initial spec_check_en = $test$plusargs("spec_check");
     // The A20 input, driven by I/O writes (0xF0 = mask, 0xF4 = unmask), and two
     // counts of memory writes by bus address, read back with IN: writes with
     // address bit 21 set (0xD0), and writes with bit 20 set while A20 was
@@ -1193,6 +1197,9 @@ module tb_protected_mode #(
                             $display("  TEST PASSED!");
                             $display("  Total cycles: %0d", cycle);
                             $display("  Total instructions: %0d", instruction_count);
+                            if (spec_check_en)
+                                $display("  SPEC CHECK: %0d seeded flushes checked, %0d skipped",
+                                         spec_checked, spec_skipped);
                             if ($test$plusargs("expect_lock"))
                                 $display("  LOCK# reads/writes: %0d/%0d",
                                          locked_reads, locked_writes);
@@ -2165,6 +2172,61 @@ module tb_protected_mode #(
             // Trace paging
             if ($test$plusargs("trace_paging") && dut.mem_req_upcoming)
                 $display("PAGING: linear=%08X servicing=%0d", dut.ind_linear, dut.mem_servicing);
+        end
+    end
+
+    // +spec_check: an oracle for the prefetcher's branch-target buffer. When a
+    // flush is seeded from a buffered line (spec_flush_hit), the bytes it
+    // supplies from the target offset on must equal memory at the line's
+    // CURRENT translation (CR3 tables in bench memory, the A20 mask). Skipped
+    // while a store may still be outside memory (D-cache queue or lookup busy,
+    // paging servicing a request), so a mismatch is a stale line, not a lag.
+    // A program that edits a PTE without invalidating it may legitimately
+    // trip it; the hazard fuzzers always invalidate.
+    function automatic [31:0] tbm32(input [31:0] a);
+        tbm32 = {mem[(a + 3) & (MEM_SIZE - 1)], mem[(a + 2) & (MEM_SIZE - 1)],
+                 mem[(a + 1) & (MEM_SIZE - 1)], mem[a & (MEM_SIZE - 1)]};
+    endfunction
+    // An unsnooped platform write (port 0xC8 poke) is legally invisible to the
+    // CPU's copies until the next platform flush completes; a snoop lands a
+    // cycle late in the buffer. Neither is checked.
+    reg [31:0] spec_pokes_seen = 0;
+    bit        spec_ext_pending = 1'b0;
+    always @(posedge clk) begin
+        if (platform_dma_pokes != spec_pokes_seen) begin
+            spec_pokes_seen <= platform_dma_pokes;
+            spec_ext_pending <= 1'b1;
+        end else if (dut.memory_inst.cache_unit_inst.cache_flush_done_r)
+            spec_ext_pending <= 1'b0;
+    end
+    always @(posedge clk) if (spec_check_en && reset_n && dut.prefetch_inst.spec_flush_hit) begin : spec_oracle
+        logic [31:0] lin, phys, pde, pte;
+        logic [127:0] line;
+        logic ok;
+        lin = {dut.prefetch_inst.spec_addr, 4'h0};
+        ok = 1'b1;
+        phys = lin;
+        if (dut.CR0[31]) begin
+            pde = tbm32({dut.CR3[31:12], 12'h0} + {20'h0, lin[31:22], 2'b00});
+            pte = tbm32({pde[31:12], 12'h0} + {20'h0, lin[21:12], 2'b00});
+            ok = pde[0] && pte[0];
+            phys = {pte[31:12], lin[11:0]};
+        end
+        if (!tb_a20)
+            phys = phys & (PC98_MAP ? `Z486_PC98_A20_MASK_OFF : 32'hffef_ffff);
+        if (!ok || dut.mem_servicing || spec_ext_pending || xdma_snoop_valid ||
+            dut.pf_snoop_kill_r ||
+            (dut.memory_inst.cache_unit_inst.dcache_inst.storeq_count != 0) ||
+            (dut.memory_inst.cache_unit_inst.dcache_inst.state != 3'd1)) begin   // S_IDLE
+            spec_skipped++;
+        end else begin
+            spec_checked++;
+            line = dut.prefetch_inst.spec_hit_line;
+            for (int b = 0; b < 16; b++)
+                if (b >= dut.prefetch_inst.spec_off &&
+                    line[8*b +: 8] !== mem[(phys + b) & (MEM_SIZE - 1)])
+                    $fatal(1, "SPEC STALE: line %08x (phys %08x) byte %0d buffer %02x memory %02x",
+                           lin, phys, b, line[8*b +: 8], mem[(phys + b) & (MEM_SIZE - 1)]);
         end
     end
 

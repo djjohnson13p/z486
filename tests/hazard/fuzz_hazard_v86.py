@@ -464,7 +464,9 @@ def seed_job(seed, nops, irq, keep_dir):
                         stem.with_suffix(".lst")):
         return seed, f"lat {lat}", "ASM FAIL", {}
     tpm.build_memory_image(cfg, stem.with_suffix(".bin"), stem.with_suffix(".hex"))
-    base = [f"+mem_latency={lat}"] + (["+no_line_fill"] if narrow else [])
+    # +spec_check: the bench's branch-target buffer oracle (a stale seeded line
+    # is a $fatal, i.e. a FATAL result, even when the checksum survives it).
+    base = [f"+mem_latency={lat}", "+spec_check"] + (["+no_line_fill"] if narrow else [])
     # IRQs never reach the checksum, so the uncached reference (several times
     # slower per instruction) takes them less often instead of drowning in them.
     ref = run_one(stem, cfg, base + ["+z486_fast_off", "+z486_cache_off"] +
