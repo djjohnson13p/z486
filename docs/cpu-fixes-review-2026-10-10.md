@@ -118,7 +118,7 @@ the three `audit-*` branches onto `hazard-audit`, at `c1a791a`. The curation tou
 | `623d0c3` chore fuse | ACCEPT | sim-only; never fired in the release gate (incl. `+cpu_speed` 1-3) or any run here. Message fixed (nit 6). `chore:` is a fair prefix for a translate_off guard |
 | `9249e94` docs hazard audit | ACCEPT | curated by the reviewer (nit 2) |
 
-## Fail-first re-runs (reviewer's own, newdelltower)
+## Fail-first re-runs (reviewer's own, on a build host)
 
 Each test ran on its parent commit and on its fix, at mem_latency 0-32, fast and `+z486_fast_off`:
 
@@ -162,7 +162,7 @@ program ran serially, because the upstream runner shares one hex file between pa
   - `fuzz_hazard_emm.py`: 50/50;
   - `fuzz_hazard_emm.py --irq 1200`: 50/50.
 
-  350 seeds (1400 simulations), 0 mismatches. The fuzzers ran locally at JOBS=4 (newdelltower
+  350 seeds (1400 simulations), 0 mismatches. The fuzzers ran locally at JOBS=4 (on a build host
   was loaded by another job). The RMW probe below adds 60 more `--rmw` seeds, also all match.
 
 ## Performance (cycles; main `23bdc0c` vs integrated head)
