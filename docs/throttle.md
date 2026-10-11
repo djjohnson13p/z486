@@ -93,7 +93,12 @@ the platform clock only, never of a count of it.
    exactly as a response may start in the accept cycle or any cycle after
    (`z486.sv`'s bus contract). True levels (`intr`, `a20_enable`,
    `win0_unmapped`, `ram_cache_top`, the `*_off_req` switches, ...) need no
-   hold.
+   hold. A level's short *low* phase is not an event either: the CPU never
+   needs to see `intr` deassert between two requests (an 8259 can raise INT
+   again for a higher-priority IRQ within one CPU clock of an acknowledge, and
+   the gated clock skips the edges in between). The interrupt latch re-arms at
+   the delivery's end; until `fix(interrupt_controller)` it waited for `intr`
+   to be sampled low, and the PC-9821 core wedged with INTR held and IF set.
 4. **Count CPU events, not platform cycles,** in any debug that counts the CPU's
    progress (the core's trace ring, the watchdog): the CPU's outputs repeat
    between enabled edges.

@@ -58,9 +58,20 @@ always_ff @(posedge clk) begin
         nmi_pending <= nmi_accept_boundary ? (nmi_pending & nmi_edge)
                                            : (nmi_pending | nmi_edge);
 
-        // INTR is level-sensitive. CINTLA suppresses re-latching until the
-        // external request is deasserted.
-        if (!intr)
+        // INTR is level-sensitive. CINTLA (between the two INTA cycles)
+        // suppresses re-latching the request being acknowledged, whose INTR the
+        // PIC drops only after the second INTA. The re-arm is the request's
+        // deassertion OR the next instruction boundary (the end of the
+        // delivery, long after the second INTA has completed): a 486 samples
+        // INTR as a level at each boundary and does not require it to go low
+        // between two requests. A re-arm on the deassertion alone wedges when
+        // the PIC raises INTR again for a higher-priority request at, or within
+        // one CPU clock of, the acknowledge - the low phase is never sampled
+        // (always so under a gated CPU clock whose skipped edges hide it), and
+        // INTR then stays high with IF=1 and is never taken again. While IF is
+        // clear nothing latches, so for an interrupt gate (or real mode) the
+        // boundary re-arm changes nothing until IRET/STI sets IF.
+        if (!intr || i_rni)
             intr_latch_inhibit <= 1'b0;
         if (intr && iflag && !intr_latch_inhibit)
             intr_pending <= 1'b1;
