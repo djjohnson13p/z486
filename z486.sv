@@ -2300,7 +2300,7 @@ wire iack_busop = uc_p_iack;        // IACK bus operation (interrupt acknowledge
 // belongs to the execution that follows.
 assign mem_op_eligible = core_live && !mem_servicing && !recipe_slot_stale && !stall_ucrd &&
                          !throttle_parked_r && !vipt_load_exec_block && !rmw_fallback_delay_r &&
-                         !(i_rni_delay && d2_vipt_candidate);
+                         !(i_rni_delay && (d2_vipt_candidate || d2_vipt_rmw_candidate));
 // A failed protection test blocks bus operations in its delay slots.
 wire uc_data_busreq = !prot_redirect_prev &&
                       ((uc_is_mem_busop && !mem_is_io) ||
