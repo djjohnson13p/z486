@@ -149,6 +149,7 @@ PLA4_RTL := $(Z486_DIR)/protection.sv
 
 .PHONY: check-equiv test-release test-pc98-map test-protected-narrow check-generators test-data-access check-runner test-l1-tags-wide test-reset-restart test-fuzz
 .PHONY: test-bigmem test-addr-unit-reloc test-reset-sweep test-pc98-map-bus test-mem-resp test-protected-throttled
+.PHONY: test-protected-zero-wait test-fuzz-zero-wait
 .PHONY: test-throttle-rate test-throttle-invariance test-fuzz-throttle test-throttle-sweep
 
 all: build
@@ -160,7 +161,7 @@ test-release:
 	$(MAKE) -j1 check-reset-lists check-pragmas check-rom-columns check-shift-ucode check-generators check-runner check-equiv
 	$(MAKE) -j1 test-l1-cache test-l1-icache test-memory-order test-mem-resp test-load-waw test-gpr-merge test-gpr-hazard test-data-access test-memmap-template test-interrupt-nmi test-paging-walker test-paging-tlb test-cache-flush test-cache-coherence test-reset-restart
 	$(MAKE) -j1 test-addr-unit-reloc test-reset-sweep test-pc98-map-bus
-	$(MAKE) -j1 test-protected test-protected-narrow test-protected-throttled test-throttle-rate test-throttle-invariance test-fuzz-throttle test-simple test-pc98-map test-bigmem test-l1-tags-wide test-fuzz
+	$(MAKE) -j1 test-protected test-protected-narrow test-protected-zero-wait test-protected-throttled test-throttle-rate test-throttle-invariance test-fuzz-throttle test-fuzz-zero-wait test-simple test-pc98-map test-bigmem test-l1-tags-wide test-fuzz
 	$(MAKE) -j1 obj_dir_x87/Vtb_protected_mode
 	Z486_ENABLE_X87=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_x87/Vtb_protected_mode ./test_protected_mode.py --strict
 	$(MAKE) -j1 dhrystone
@@ -530,12 +531,27 @@ test-protected: obj_dir/Vtb_protected_mode
 test-protected-narrow: obj_dir/Vtb_protected_mode
 	SIM_PLUSARGS=+no_line_fill ./test_protected_mode.py --strict
 
+# A demand read answered in the very cycle valid rises (ready and the first data
+# beat together).  z486's bus contract allows it; the default memory model never
+# does it, and a wedge in paging_unit hid there.
+test-protected-zero-wait: obj_dir/Vtb_protected_mode
+	SIM_PLUSARGS=+zero_wait ./test_protected_mode.py --strict
+	SIM_PLUSARGS="+zero_wait +no_line_fill" ./test_protected_mode.py --strict
+
 # A throttled CPU is the same CPU seeing fewer clock edges (docs/throttle.md):
 # the whole suite at each throttle setting, the memory and I/O at full rate.
 # The runner scales cycle budgets and skips the programs that time themselves.
 THROTTLE_SELS ?= 3 7
 test-protected-throttled: obj_dir/Vtb_protected_mode
 	for s in $(THROTTLE_SELS); do SIM_PLUSARGS=+cpu_speed=$$s ./test_protected_mode.py --strict; done
+
+# The fuzzers with the memory answering in the accept cycle (FUZZ_EXTRA is
+# appended to every run's plusargs).
+test-fuzz-zero-wait: obj_dir/Vtb_protected_mode
+	FUZZ_EXTRA=+zero_wait python3 ./hazard/fuzz_hazard.py --count $(FUZZ_THROTTLE_COUNT) --jobs $(JOBS)
+	FUZZ_EXTRA=+zero_wait python3 ./hazard/fuzz_hazard_v86.py --count $(FUZZ_THROTTLE_COUNT) --jobs $(JOBS)
+	FUZZ_EXTRA=+zero_wait python3 ./hazard/fuzz_hazard_emm.py --count $(FUZZ_THROTTLE_COUNT) --jobs $(JOBS)
+	SIM_PLUSARGS=+zero_wait python3 ./fuzz_gpr_pipeline.py --count $(FUZZ_COUNT)
 
 # Throttled time is the requested time, a REP STOSD included.
 test-throttle-rate: obj_dir/Vtb_protected_mode
@@ -572,8 +588,10 @@ test-throttle-sweep: obj_dir/Vtb_protected_mode
 	FUZZ_THROTTLE="$(SWEEP_SELS)" python3 ./hazard/fuzz_hazard_emm.py --count $(SWEEP_COUNT) --first $(SWEEP_FIRST) --jobs $(JOBS)
 
 test-pc98-map: obj_dir_pc98/Vtb_protected_mode
-	Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
-	SIM_PLUSARGS=+no_line_fill Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20
+	Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20 pc98_direct_read_shapes
+	SIM_PLUSARGS=+no_line_fill Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20 pc98_direct_read_shapes
+	SIM_PLUSARGS=+zero_wait Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20 pc98_direct_read_shapes
+	SIM_PLUSARGS="+zero_wait +no_line_fill" Z486_PC98_MAP=1 Z486_TESTBENCH=$(CURDIR)/obj_dir_pc98/Vtb_protected_mode ./test_protected_mode.py --strict pc98_direct_code pc98_noalloc_code hz_nonalloc_target pc98_high_alias lock_window rmw_device_reads pc98_a20_bit20 pc98_direct_read_shapes
 
 BIGMEM_TESTS := hz_spec_a20_rm
 test-bigmem: obj_dir_bigmem/Vtb_protected_mode

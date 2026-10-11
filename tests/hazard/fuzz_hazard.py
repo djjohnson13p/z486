@@ -423,7 +423,7 @@ def seed_job(seed, nops, keep_dir, rmw=False, extra=""):
     tpm.build_memory_image(cfg, stem.with_suffix(".bin"), stem.with_suffix(".hex"))
     # +spec_check: the bench's branch-target buffer oracle (a stale seeded line
     # is a $fatal, i.e. a FATAL result, even when the checksum survives it).
-    base = [f"+mem_latency={lat}", "+spec_check"] + (["+no_line_fill"] if narrow else []) + extra.split()
+    base = [f"+mem_latency={lat}", "+spec_check"] + (["+no_line_fill"] if narrow else []) + extra.split() + os.environ.get("FUZZ_EXTRA", "").split()
     ref = run_one(stem, cfg, base + ["+z486_fast_off", "+z486_cache_off"])
     res = {
         "fast": run_one(stem, cfg, base),

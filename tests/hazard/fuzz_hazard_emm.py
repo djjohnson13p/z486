@@ -605,6 +605,8 @@ def seed_job(seed, nops, irq, keep_dir):
     # +spec_check: the bench's branch-target buffer oracle (a stale seeded line
     # is a $fatal, i.e. a FATAL result, even when the checksum survives it).
     base = [f"+mem_latency={lat}", "+spec_check"] + (["+no_line_fill"] if narrow else [])
+    # FUZZ_EXTRA="+zero_wait": plusargs for every run (the reference too)
+    base += os.environ.get("FUZZ_EXTRA", "").split()
     ref = run_one(stem, cfg, base + ["+z486_fast_off", "+z486_cache_off"] +
                   ([f"+fuzz_irq_period={irq * 8}"] if irq else []))
     if irq:

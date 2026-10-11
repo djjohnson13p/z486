@@ -79,12 +79,15 @@ module tb_protected_mode #(
             $display("[TB] throttle: speed %0d = %0d kHz of %0d kHz",
                      cpu_speed_sel, throttle.rate_khz(cpu_speed_sel), TB_CLOCK_KHZ);
     end
+    wire zw_fire, zw_line_fire;
+    wire [127:0] zw_line_data;
+    wire [31:0] zw_data;
     // The platform's pulse inputs reach the CPU only on its enabled edges.
     wire resp_valid_h, line_resp_valid_h, snoop_valid_h, resp_stall, line_stall, snoop_stall;
     cpu_pulse_hold hold_resp (.clk(clk), .reset_n(reset_n), .bus_ce(cpu_ce),
-        .pulse_i(resp_valid), .pulse_o(resp_valid_h), .stall(resp_stall));
+        .pulse_i(resp_valid | zw_fire), .pulse_o(resp_valid_h), .stall(resp_stall));
     cpu_pulse_hold hold_line (.clk(clk), .reset_n(reset_n), .bus_ce(cpu_ce),
-        .pulse_i(line_resp_valid), .pulse_o(line_resp_valid_h), .stall(line_stall));
+        .pulse_i(line_resp_valid | zw_line_fire), .pulse_o(line_resp_valid_h), .stall(line_stall));
     cpu_pulse_hold hold_snoop (.clk(clk), .reset_n(reset_n), .bus_ce(cpu_ce),
         .pulse_i(xdma_snoop_valid), .pulse_o(snoop_valid_h), .stall(snoop_stall));
     wire resp_backpressure = resp_stall | line_stall;
@@ -113,8 +116,8 @@ module tb_protected_mode #(
         .be(be),
         .burstcount(burstcount),
         .line_read(line_read),
-        .din(din),
-        .line_din(line_din),
+        .din(zw_fire ? zw_data : din),
+        .line_din(zw_line_fire ? zw_line_data : line_din),
         .dout(dout),
         .valid(valid),
         .write(write),
@@ -800,6 +803,43 @@ module tb_protected_mode #(
     longint     platform_flush_start = 0;
     longint     platform_dma_pokes = 0;
     reg         flush_complete = 1'b0;
+    // +zero_wait: a single-beat (non-line) demand read is answered in the SAME
+    // cycle valid rises: ready (already high) and the data beat both arrive on
+    // the CPU edge that accepts the request.  z486's bus contract allows this
+    // (tb_mem_resp MODE_SAME); the default model only answers a cycle later.
+    bit zero_wait_en = 1'b0;
+    initial zero_wait_en = $test$plusargs("zero_wait");
+    wire zw_ok = zero_wait_en && reset_n && valid && ready && cpu_ce && !write &&
+                 !inta && !rd_busy && !resp_backpressure && (async_stall <= 1);
+    assign zw_line_fire = zw_ok && !io && LINE_FILL && line_fill_en && line_read;
+    // Narrow reads: the first beat (the only one of a single-beat read) is
+    // answered in the accept cycle; any further beats follow as usual.
+    assign zw_fire = zw_ok && !zw_line_fire;
+    reg [127:0] zw_line_r;
+    assign zw_line_data = zw_line_r;
+    always_comb begin
+        reg [31:0] lb;
+        lb = {addr, 2'b00};
+        if (lb >= MEM_SIZE) lb = lb & (MEM_SIZE - 1);
+        for (int i = 0; i < 16; i++)
+            zw_line_r[i*8 +: 8] = mem[(lb + i) & (MEM_SIZE - 1)];
+    end
+    reg [31:0] zw_data_r;
+    assign zw_data = zw_data_r;
+    always_comb begin
+        reg [31:0] a;
+        a = {addr, 2'b00};
+        if (io)
+            zw_data_r = (a[15:0] == 16'h00FC) ? cycle :
+                      (a[15:0] == 16'h00C0) ? {31'h0, flush_complete} :
+                      (a[15:0] == 16'h00D0) ? a20_bit21_writes :
+                      (a[15:0] == 16'h00D4) ? a20_masked_bit20_writes :
+                      32'hFFFFFFFF;
+        else begin
+            if (a >= MEM_SIZE) a = a & (MEM_SIZE - 1);
+            zw_data_r = {mem[a+3], mem[a+2], mem[a+1], mem[a+0]};
+        end
+    end
 
     // Count the issued native-flush instruction words (the INVD/WBINVD entry).
     longint     cache_flush_insn_count = 0;
@@ -1104,6 +1144,9 @@ module tb_protected_mode #(
                     if ($test$plusargs("trace_io"))
                         $display("INTA cycle 2: vector=0x%02X", intr_vector);
                 end
+            end else if (zw_line_fire) begin
+                // +zero_wait: the whole line is presented this cycle (zw_line_fire).
+                ready <= 1'b1;
             end else if (LINE_FILL && line_fill_en && line_read && !write && !io) begin
                 // Whole-line fill request from an L1: answer with one 16-byte
                 // beat.  Deliberately does NOT start the narrow burst, so the
@@ -1116,10 +1159,13 @@ module tb_protected_mode #(
             end else if (!write) begin
                 // Read
                 reg [7:0] burst_len;
+                // +zero_wait: beat 0 was presented combinationally (zw_fire)
+                bit fast;
+                fast = (mem_latency <= 1) || zw_fire;
                 burst_len = io ? 8'd1 : burstcount;
                 rd_byte_addr <= {addr, 2'b00};
-                rd_index <= (mem_latency <= 1) ? 8'd1 : 8'd0;
-                rd_wait_count <= (mem_latency <= 1) ? 0 : (mem_latency - 1);
+                rd_index <= fast ? 8'd1 : 8'd0;
+                rd_wait_count <= fast ? 0 : (mem_latency - 1);
                 rd_io_pending <= io;
 
                 if (!io) begin
@@ -1133,12 +1179,12 @@ module tb_protected_mode #(
                         $display("MEM RD @%08x count=%0d first=%08x", byte_addr, burstcount,
                                  {mem[byte_addr+3], mem[byte_addr+2],
                                   mem[byte_addr+1], mem[byte_addr+0]});
-                    if (mem_latency <= 1) begin
+                    if (mem_latency <= 1 && !zw_fire) begin
                         resp_valid <= 1'b1;
                         din <= {mem[byte_addr+3], mem[byte_addr+2],
                                 mem[byte_addr+1], mem[byte_addr+0]};
                     end
-                end else if (mem_latency <= 1) begin
+                end else if (mem_latency <= 1 && !zw_fire) begin
                     // Port 0xFC reads the testbench cycle counter so directed
                     // programs can assert instruction intervals.
                     resp_valid <= 1'b1;
@@ -1148,9 +1194,9 @@ module tb_protected_mode #(
                            ({addr[15:2], 2'b00} == 16'h00D4) ? a20_masked_bit20_writes :
                            32'hFFFFFFFF;
                 end
-                rd_remaining <= (mem_latency <= 1 && burst_len > 8'd1) ?
-                                (burst_len - 8'd1) : burst_len;
-                ready <= (mem_latency <= 1 && burst_len <= 8'd1);
+                rd_remaining <= (fast && burst_len > 8'd1) ?
+                                (burst_len - 8'd1) : (zw_fire ? 8'd0 : burst_len);
+                ready <= (fast && burst_len <= 8'd1);
             end else begin
                 // Write
                 ready <= 1'b1;
