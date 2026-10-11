@@ -758,6 +758,29 @@ module tb_protected_mode #(
     int       nmi_pulse_cycles = 1;    // NMI high width in cycles (for deterministic edge delivery)
     int       nmi_hold_count = 0;
     reg       inta_first = 0;          // Track first vs second INTA pair
+    // A PIC whose INTR goes low at the acknowledge and comes back almost at once:
+    // the 8259 drops INT when the acked IRQ enters service and raises it again
+    // as soon as a request of higher priority than the in-service one arrives,
+    // which can be any number of clocks later - including fewer than one CPU
+    // clock period when the CPU is throttled (the gated clock skips the edges
+    // in between), or none at all.  +intr_rerequest=N makes the next N second
+    // INTA cycles drop INTR for only +intr_regap=G platform cycles (G=0: INTR
+    // stays asserted through the acknowledge) and then raise it again; a 486
+    // samples INTR as a level at every instruction boundary, so each of those
+    // requests must be acknowledged in its turn.
+    int unsigned intr_rerequest = 0;
+    int unsigned intr_regap = 0;
+    int unsigned intr_regap_count = 0;
+    // +intr_drop_delay=D: a slow PIC - INTR stays asserted for D platform
+    // cycles after the second INTA before it drops (the stale level of the
+    // request just acknowledged, which must not be taken a second time).
+    int unsigned intr_drop_delay = 0;
+    int unsigned intr_drop_count = 0;
+    initial begin
+        void'($value$plusargs("intr_drop_delay=%d", intr_drop_delay));
+        void'($value$plusargs("intr_rerequest=%d", intr_rerequest));
+        void'($value$plusargs("intr_regap=%d", intr_regap));
+    end
     reg       inta_resp_pending = 0;
     reg [31:0] inta_resp_data = 32'h0;
 
@@ -1020,6 +1043,16 @@ module tb_protected_mode #(
         end
         if (async_stall > 0)
             async_stall <= async_stall - 1;
+        if (intr_drop_count > 0) begin
+            intr_drop_count <= intr_drop_count - 1;
+            if (intr_drop_count == 1)
+                intr <= 1'b0;
+        end
+        if (intr_regap_count > 0) begin
+            intr_regap_count <= intr_regap_count - 1;
+            if (intr_regap_count == 1)
+                intr <= 1'b1;
+        end
         if (xdma_en && reset_n && !xdma_done) begin
             if (!xdma_armed && valid && ready && !rd_busy && cpu_ce && !write && !io && !inta &&
                 ({addr, 2'b00} == {xdma_trig[31:2], 2'b00})) begin
@@ -1140,7 +1173,19 @@ module tb_protected_mode #(
                 end else begin
                     inta_first <= 1'b0;
                     inta_resp_data <= {24'h0, intr_vector};
-                    intr <= 1'b0;
+                    if (intr_rerequest > 0) begin
+                        intr_rerequest <= intr_rerequest - 1;
+                        if (intr_regap > 0) begin
+                            intr <= 1'b0;
+                            intr_regap_count <= intr_regap;
+                        end
+                        if ($test$plusargs("trace_io"))
+                            $display("[TB] INTR re-requested %0d platform cycles after the acknowledge",
+                                     intr_regap);
+                    end else if (intr_drop_delay > 0)
+                        intr_drop_count <= intr_drop_delay;
+                    else
+                        intr <= 1'b0;
                     if ($test$plusargs("trace_io"))
                         $display("INTA cycle 2: vector=0x%02X", intr_vector);
                 end
