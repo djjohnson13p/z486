@@ -474,7 +474,13 @@ wire req_mem_dcache_candidate = (state == PG_MEM_TLB) && req_can_translate &&
                                 cache_lookup_granted;
 wire req_mem_dcache_accept = req_mem_dcache_candidate && dcache_req_accepted;
 
+// A response in the accept cycle itself (the bus contract allows it; the memory
+// fabric need not wait a cycle).  For a write it is the posted store; for a read
+// the data lands this cycle, so the request is over before PG_IDLE sees it and
+// fast_path_pending / mem_dly_grace must not be raised for a completion that
+// has already happened.
 wire req_mem_posted_done = req_mem_dcache_accept && req_is_write && dcache_req_complete;
+wire req_mem_acc_done    = req_mem_dcache_accept && dcache_req_complete;
 assign mem_write_dly_grace = (state == PG_MEM_TLB) && req_is_write && write_will_post && !req_crossing;
 // Fault-capable window of a demand write (see the port comment).  States
 // after translation succeeds (WALK_LOOKUP, CROSS_LOOKUP2/WAIT2, IDLE with
@@ -1038,6 +1044,16 @@ always_ff @(posedge clk or negedge reset_n) begin
                         mem_servicing <= 1'b0;
                     end else begin
                         state <= PG_MEM_TLB;
+                        // Read-return metadata is needed in the accept cycle
+                        // itself when the response arrives with the accept
+                        // (req_mem_acc_done), before PG_MEM_TLB's own latch
+                        // lands.  The offset is the request's own low bits.
+                        if (idle_mem_crossing)
+                            latch_biu_meta(2'd0, first_half_bytes(linear_addr[1:0]) - 2'd1,
+                                           linear_addr[1:0], 1'b0, 1'b0);
+                        else
+                            latch_biu_meta(2'd0, op_size_bytes_m1(mem_op_size),
+                                           linear_addr[1:0], 1'b0, 1'b0);
                         // Loop 1: precompute (from the live TLB) whether this
                         // memory write will post next cycle, so the post-write
                         // DLY grace carries no live TLB cone into uc_exec.
@@ -1059,11 +1075,11 @@ always_ff @(posedge clk or negedge reset_n) begin
                         if (req_crossing) begin
                             latch_biu_meta(2'd0, first_half_bytes(req_offset) - 2'd1,
                                            req_offset, 1'b0, 1'b0);
-                            state <= req_mem_posted_done ? PG_CROSS_PREP2 : PG_CROSS_WAIT1;
+                            state <= req_mem_acc_done ? PG_CROSS_PREP2 : PG_CROSS_WAIT1;
                         end else begin
                             latch_biu_meta(2'd0, op_size_bytes_m1(req_op_size),
                                            req_offset, 1'b0, 1'b0);
-                            if (req_mem_posted_done) begin
+                            if (req_mem_acc_done) begin
                                 mem_servicing <= 1'b0;
                                 fast_path_pending <= 1'b0;
                                 state <= PG_IDLE;
