@@ -2348,6 +2348,17 @@ wire        mem_req_to_paging = (mem_op_eligible &&
                                 vipt_slow_submit || ucrd_slow_submit;
 
 wire        iack_req_to_paging = mem_op_eligible && iack_busop && !gp_fault_trigger;
+// synthesis translate_off
+// An RMW_FAST issue (D2 -> EX with a probe) must not coincide with a
+// predecessor's bus request being accepted by paging: the RMW's first uStep
+// would then stall after its probe and its late finish would read another
+// access's preread.  d2_vipt_rmw sees only registered mem_servicing, so this
+// is a stimulus-level guard, not a proven property.
+always_ff @(posedge clk) begin
+    if (reset_n && i_issue && d2_vipt_rmw && mem_req_to_paging && mem_accepted)
+        $fatal(1, "RMW_FAST ISSUE IN A PREDECESSOR BUS ACCEPT CYCLE");
+end
+// synthesis translate_on
 wire        mem_write_now = (x87_direct_mem_req || vipt_slow_submit || ucrd_slow_submit) ? 1'b0 :
                             (uc_is_write || (io_busop_wr && mem_is_io));
 wire [1:0]  paging_mem_eff_size = vipt_slow_submit
