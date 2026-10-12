@@ -404,6 +404,9 @@ gpr_write_merge gpr_merge (
     .size_wb(load_wb_size),
     .wb_is_alu(load_wb_is_alu),
     .data_wb(load_wb_commit_data),
+    // The views forward producer 3 only when !load_wb_is_alu, where
+    // load_wb_commit_data is load_wb_data: the M3 ALU stays off the views.
+    .fwd_wb(load_wb_data),
 
     .v_dly(dly_gpr_forward.valid),
     .dst_dly(dly_gpr_forward.dst),

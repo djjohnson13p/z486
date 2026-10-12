@@ -84,6 +84,12 @@ module gpr_write_merge
     input  logic [1:0]   size_wb,
     input  logic         wb_is_alu,     // M3 ALU result: commit only, never forwarded
     input  logic [31:0]  data_wb,
+    // The value the views forward for producer 3.  A view selects producer 3
+    // only when !wb_is_alu, so the caller passes the plain loaded value here:
+    // it must equal data_wb whenever !wb_is_alu (fused below).  Keeping the
+    // M3 ALU's add/logic result (and its EFLAGS.CF carry-in) on the commit path
+    // only takes it off every forwarding cone, where it was never selected.
+    input  logic [31:0]  fwd_wb,
 
     // Producer 4: delay-slot bypass (views only).
     input  logic         v_dly,
@@ -250,6 +256,8 @@ wire [31:0] pv4 = producer_value(4);
 wire [31:0] pv5 = producer_value(5);
 wire [31:0] pv6 = producer_value(6);
 wire [31:0] pv7 = producer_value(7);
+// Producer 3 as the views see it (see fwd_wb): equal to pv3 wherever hitv3.
+wire [31:0] pv3f = align_of_size(size_wb, dst_wb[2], fwd_wb);
 
 // The capture-view merge for one selected register: the same terms in the same
 // order as byte_cap below, with the register comparison folded into each hit.
@@ -257,7 +265,7 @@ function automatic logic [31:0] cap_select(input logic [2:0] sel);
     logic [3:0] en [8];
     logic [31:0] cv;
     logic [31:0] pvs [8];
-    pvs[0] = pv0; pvs[1] = pv1; pvs[2] = pv2; pvs[3] = pv3;
+    pvs[0] = pv0; pvs[1] = pv1; pvs[2] = pv2; pvs[3] = pv3f;
     pvs[4] = pv4; pvs[5] = pv5; pvs[6] = pv6; pvs[7] = pv7;
     for (int k = 0; k < 8; k++)
         en[k] = (dst_norm(k) == sel) ? producer_lane(k) : 4'h0;
@@ -335,7 +343,7 @@ for (r = 0; r < 8; r++) begin : g_reg
                                         (hit6 && vis_ex[6])    ? pv6[b*8 +: 8] :
                                         (hit5 && vis_ex[5])    ? pv5[b*8 +: 8] :
                                         (hit4 && vis_ex[4])    ? pv4[b*8 +: 8] :
-                                        (hitv3 && vis_ex[3])   ? pv3[b*8 +: 8] :
+                                        (hitv3 && vis_ex[3])   ? pv3f[b*8 +: 8] :
                                         (hit2 && vis_ex[2])    ? pv2[b*8 +: 8] :
                                         (hit1 && vis_ex[1])    ? pv1[b*8 +: 8] :
                                         (hit0 && vis_ex[0])    ? pv0[b*8 +: 8] :
@@ -347,7 +355,7 @@ for (r = 0; r < 8; r++) begin : g_reg
                                          (hit6 && vis_ea[6])   ? pv6[b*8 +: 8] :
                                          (hit5 && vis_ea[5])   ? pv5[b*8 +: 8] :
                                          (hit4 && vis_ea[4])   ? pv4[b*8 +: 8] :
-                                         (hitv3 && vis_ea[3])  ? pv3[b*8 +: 8] :
+                                         (hitv3 && vis_ea[3])  ? pv3f[b*8 +: 8] :
                                          (hit2 && vis_ea[2])   ? pv2[b*8 +: 8] :
                                          (hit1 && vis_ea[1])   ? pv1[b*8 +: 8] :
                                          (hit0 && vis_ea[0])   ? pv0[b*8 +: 8] :
@@ -359,7 +367,7 @@ for (r = 0; r < 8; r++) begin : g_reg
                                          (hit6 && vis_cap[6])  ? pv6[b*8 +: 8] :
                                          (hit5 && vis_cap[5])  ? pv5[b*8 +: 8] :
                                          (hit4 && vis_cap[4])  ? pv4[b*8 +: 8] :
-                                         (hitv3 && vis_cap[3]) ? pv3[b*8 +: 8] :
+                                         (hitv3 && vis_cap[3]) ? pv3f[b*8 +: 8] :
                                          (hit2 && vis_cap[2])  ? pv2[b*8 +: 8] :
                                          (hit1 && vis_cap[1])  ? pv1[b*8 +: 8] :
                                          (hit0 && vis_cap[0])  ? pv0[b*8 +: 8] :
@@ -392,13 +400,22 @@ function automatic logic [31:0] ref_chain(input int rr, input logic [7:0] vis,
         d32 = 32'd0;
         for (int bb = 0; bb < 4; bb++) begin
             be[8*bb +: 8]  = {8{hit_of(step, rr, bb, forwarding)}};
-            d32[8*bb +: 8] = producer_value(step)[bb*8 +: 8];
+            d32[8*bb +: 8] = (forwarding && step == 3) ? pv3f[bb*8 +: 8]
+                                                       : producer_value(step)[bb*8 +: 8];
         end
         if (vis[step])
             acc = (acc & ~be) | (d32 & be);
     end
     ref_chain = acc;
 endfunction
+
+// The fwd_wb contract: the views forward fwd_wb for producer 3 exactly where
+// the commit writes data_wb, so the two must agree whenever a view can pick it.
+always_comb begin : fwd_wb_fuse
+    if (v_wb && !wb_is_alu && (fwd_wb !== data_wb))
+        $fatal(1, "GPR MERGE FWD_WB CONTRACT: fwd_wb %08x != data_wb %08x on a plain write-back",
+               fwd_wb, data_wb);
+end
 
 always_comb begin : merge_equiv_fuse
     for (int rr = 0; rr < 8; rr++) begin

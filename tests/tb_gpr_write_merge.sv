@@ -22,6 +22,10 @@ module tb_gpr_write_merge;
     logic [1:0]   size_shift, mode_mem, size_rom, size_wb, mode_dly;
     logic [31:0]  data_shift, data_mem, data_rom, data_wb, data_dly;
     logic         wb_is_alu;
+    // The plain loaded value the views forward: data_wb on a plain write-back
+    // (the contract), a distinct value under an M3 ALU result so a view that
+    // forwarded it would fail the "not forwarded" checks.
+    wire  [31:0]  fwd_wb = wb_is_alu ? ~data_wb : data_wb;
     logic         v_stos, v_sigsrc, v_esp;
     logic [2:0]   dst_sigsrc;
     logic [1:0]   size_stos, size_sigsrc;
@@ -39,6 +43,7 @@ module tb_gpr_write_merge;
         .v_mem(v_mem), .dst_mem(dst_mem), .mode_mem(mode_mem), .data_mem(data_mem),
         .v_rom(v_rom), .dst_rom(dst_rom), .size_rom(size_rom), .data_rom(data_rom),
         .v_wb(v_wb), .dst_wb(dst_wb), .size_wb(size_wb), .wb_is_alu(wb_is_alu), .data_wb(data_wb),
+        .fwd_wb(fwd_wb),
         .v_dly(v_dly), .dst_dly(dst_dly), .mode_dly(mode_dly), .data_dly(data_dly),
         .v_stos(v_stos), .size_stos(size_stos), .data_stos(data_stos),
         .v_sigsrc(v_sigsrc), .dst_sigsrc(dst_sigsrc), .size_sigsrc(size_sigsrc),
