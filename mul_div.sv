@@ -140,8 +140,6 @@ always_ff @(posedge clk) begin
 end
 
 always_comb begin
-    logic [15:0] full16;
-    logic [31:0] full32;
     logic [63:0] full64;
 
     div_dividend_neg = div_sign_bit(sigma, op_size);
@@ -152,25 +150,24 @@ always_comb begin
     prediv_q_in = div_op_by_size(DIV_OP_MASK, divtmp, op_size);
     prediv_r_in = div_op_by_size(DIV_OP_MASK, sigma, op_size);
 
-    full16 = {sigma[7:0], divtmp[7:0]};
-    full32 = {sigma[15:0], divtmp[15:0]};
-    full64 = {sigma, divtmp};
+    // The double-width dividend {sigma, divtmp} at the operand size, negated
+    // by one 64-bit negator: a 16- or 32-bit negation is the low bits of the
+    // 64-bit one of the zero-extended value.
+    full64 = (op_size == 2'd0) ? {48'h0, sigma[7:0], divtmp[7:0]} :
+             (op_size == 2'd1) ? {32'h0, sigma[15:0], divtmp[15:0]} :
+                                 {sigma, divtmp};
+    if (div_dividend_neg)
+        full64 = ~full64 + 64'h1;
     case (op_size)
         2'd0: begin
-            if (div_dividend_neg)
-                full16 = ~full16 + 16'h1;
-            prediv_r_in = {24'h0, full16[15:8]};
-            prediv_q_in = {24'h0, full16[7:0]};
+            prediv_r_in = {24'h0, full64[15:8]};
+            prediv_q_in = {24'h0, full64[7:0]};
         end
         2'd1: begin
-            if (div_dividend_neg)
-                full32 = ~full32 + 32'h1;
-            prediv_r_in = {16'h0, full32[31:16]};
-            prediv_q_in = {16'h0, full32[15:0]};
+            prediv_r_in = {16'h0, full64[31:16]};
+            prediv_q_in = {16'h0, full64[15:0]};
         end
         default: begin
-            if (div_dividend_neg)
-                full64 = ~full64 + 64'h1;
             prediv_r_in = full64[63:32];
             prediv_q_in = full64[31:0];
         end
@@ -277,13 +274,14 @@ function automatic logic [31:0] div_op_by_size(
     input logic [31:0] value,
     input logic [1:0] size
 );
+    // A k-bit two's-complement negation is the low k bits of the 32-bit one,
+    // so one 32-bit negator serves every size before the size mask.
+    logic [31:0] v;
+    v = (op == DIV_OP_NEGATE) ? (~value) + 32'h1 : value;
     case (size)
-        2'd0: div_op_by_size = op == DIV_OP_NEGATE ?
-            {24'h0, (~value[7:0]) + 8'h1} : {24'h0, value[7:0]};
-        2'd1: div_op_by_size = op == DIV_OP_NEGATE ?
-            {16'h0, (~value[15:0]) + 16'h1} : {16'h0, value[15:0]};
-        default: div_op_by_size = op == DIV_OP_NEGATE ?
-            (~value) + 32'h1 : value;
+        2'd0: div_op_by_size = {24'h0, v[7:0]};
+        2'd1: div_op_by_size = {16'h0, v[15:0]};
+        default: div_op_by_size = v;
     endcase
 endfunction
 
