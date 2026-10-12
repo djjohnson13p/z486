@@ -21,7 +21,7 @@ module segmentation_unit
     input              init_addr32,        // D2 instruction address size for INIT_SEG
     input              init_stack_op,      // D2 stack operation for INIT_SEG
     input              clear_descsw,       // DESSTK mode bit for UPDATE_SEG
-    input      [31:0]  seg_data,           // Descriptor command payload
+    input      [31:0]  seg_data,           // Descriptor-write payload (the microcode command's)
     input      [31:0]  desc_lo,            // Descriptor low DWORD (from TMPC)
     input      [31:0]  desc_hi,            // Descriptor high DWORD (saved at PTOVRR)
     input      [15:0]  slctr,              // SLCTR register (null selector check for SDEL)
@@ -542,117 +542,126 @@ always_ff @(posedge clk) begin
         gdt_base <= 32'h0;
         gdt_limit <= 20'h003FF;
 `endif
-    end else if (seg_cmd_valid) begin
-        case (seg_cmd)
-            SEG_CMD_SBRM: begin
-                // Real-mode segment register load: set base = segment × 16.
-                // Limit and granularity are NOT reset, thus preserving "unreal mode"
-                case (seg_target[2:0])
-                    SEG_ES:  desc_cache[0].base <= {12'h0, seg_data[15:0], 4'h0};
-                    SEG_CS: begin
-                        desc_cache[1].base <= {12'h0, seg_data[15:0], 4'h0};
-                        desc_cache[1].D_B <= 1'b0;
+    end else begin
+        // The descriptor writes are microcode commands only (an issue cycle's
+        // INIT_SEG writes none), and no word carrying one executes in a D2
+        // issue cycle (z486.sv asserts it), so they decode the microcode
+        // command and target under au_exec (= uc_exec) and keep i_issue's
+        // command/target mux out of the descriptor cache's write enables.
+        if (au_exec) begin
+            case (exec_seg_cmd)
+                SEG_CMD_SBRM: begin
+                    // Real-mode segment register load: set base = segment × 16.
+                    // Limit and granularity are NOT reset, thus preserving "unreal mode"
+                    case (exec_seg_target[2:0])
+                        SEG_ES:  desc_cache[0].base <= {12'h0, seg_data[15:0], 4'h0};
+                        SEG_CS: begin
+                            desc_cache[1].base <= {12'h0, seg_data[15:0], 4'h0};
+                            desc_cache[1].D_B <= 1'b0;
+                        end
+                        SEG_SS:  desc_cache[2].base <= {12'h0, seg_data[15:0], 4'h0};
+                        SEG_DS:  desc_cache[3].base <= {12'h0, seg_data[15:0], 4'h0};
+                        SEG_FS:  desc_cache[4].base <= {12'h0, seg_data[15:0], 4'h0};
+                        SEG_GS:  desc_cache[5].base <= {12'h0, seg_data[15:0], 4'h0};
+                        SEG_IDT: idt_base <= {12'h0, seg_data[15:0], 4'h0};
+                        default: ;
+                    endcase
+                end
+
+                SEG_CMD_SAR: begin
+                    automatic logic [3:0] sar_seg;
+                    automatic logic [2:0] sar_idx;
+                    sar_seg = effective_target(exec_seg_target);
+                    sar_idx = desc_index(sar_seg);
+                    if (desc_target_valid(sar_seg)) begin
+                        desc_cache[sar_idx].P        <= seg_data[15];
+                        desc_cache[sar_idx].DPL      <= seg_data[14:13];
+                        desc_cache[sar_idx].S        <= seg_data[12];
+                        desc_cache[sar_idx].seg_type <= seg_data[11:8];
+                        desc_cache[sar_idx].G        <= seg_data[7];
+                        desc_cache[sar_idx].D_B      <= seg_data[6];
+                        desc_cache[sar_idx].A        <= seg_data[8];
                     end
-                    SEG_SS:  desc_cache[2].base <= {12'h0, seg_data[15:0], 4'h0};
-                    SEG_DS:  desc_cache[3].base <= {12'h0, seg_data[15:0], 4'h0};
-                    SEG_FS:  desc_cache[4].base <= {12'h0, seg_data[15:0], 4'h0};
-                    SEG_GS:  desc_cache[5].base <= {12'h0, seg_data[15:0], 4'h0};
-                    SEG_IDT: idt_base <= {12'h0, seg_data[15:0], 4'h0};
-                    default: ;
-                endcase
-            end
-
-            SEG_CMD_SAR: begin
-                automatic logic [3:0] sar_seg;
-                automatic logic [2:0] sar_idx;
-                sar_seg = effective_target(seg_target);
-                sar_idx = desc_index(sar_seg);
-                if (desc_target_valid(sar_seg)) begin
-                    desc_cache[sar_idx].P        <= seg_data[15];
-                    desc_cache[sar_idx].DPL      <= seg_data[14:13];
-                    desc_cache[sar_idx].S        <= seg_data[12];
-                    desc_cache[sar_idx].seg_type <= seg_data[11:8];
-                    desc_cache[sar_idx].G        <= seg_data[7];
-                    desc_cache[sar_idx].D_B      <= seg_data[6];
-                    desc_cache[sar_idx].A        <= seg_data[8];
                 end
-            end
 
-            SEG_CMD_SLIM: begin
-                automatic logic [3:0] slim_seg;
-                slim_seg = effective_target(seg_target);
-                if (desc_target_valid(slim_seg))
-                    desc_cache[desc_index(slim_seg)].limit <= seg_data[19:0];
-            end
-
-            SEG_CMD_SDEH: begin
-                automatic logic [3:0] sdeh_seg;
-                automatic logic [2:0] sdeh_idx;
-                sdeh_seg = effective_target(seg_target);
-                sdeh_idx = desc_index(sdeh_seg);
-                if (desc_target_valid(sdeh_seg)) begin
-                    desc_cache[sdeh_idx].base[31:24]  <= seg_data[31:24];
-                    desc_cache[sdeh_idx].G            <= seg_data[23];
-                    desc_cache[sdeh_idx].D_B          <= seg_data[22];
-                    desc_cache[sdeh_idx].limit[19:16] <= seg_data[19:16];
+                SEG_CMD_SLIM: begin
+                    automatic logic [3:0] slim_seg;
+                    slim_seg = effective_target(exec_seg_target);
+                    if (desc_target_valid(slim_seg))
+                        desc_cache[desc_index(slim_seg)].limit <= seg_data[19:0];
                 end
-            end
 
-            SEG_CMD_SDES: begin
-                automatic logic [2:0] sdes_idx;
-                sdes_idx = desc_index(desc_write_seg);
-                desc_cache[sdes_idx].P          <= seg_data[31];
-                desc_cache[sdes_idx].DPL        <= seg_data[30:29];
-                desc_cache[sdes_idx].S          <= seg_data[28];
-                desc_cache[sdes_idx].seg_type   <= seg_data[27:24];
-                desc_cache[sdes_idx].base[23:0] <= seg_data[23:0];
-                desc_cache[sdes_idx].A          <= seg_data[24];
-            end
-
-            SEG_CMD_SDEL: begin
-                if (slctr[15:2] == 14'b0) begin
-                    automatic seg_desc_t null_desc;
-                    null_desc = '0;
-                    null_desc.base = 32'hFFFFFFFF;
-                    null_desc.limit = 20'hFFFFF;
-                    null_desc.P = 1'b1;
-                    desc_cache[desc_index(desc_write_seg)] <= null_desc;
-                end else begin
-                    desc_cache[desc_index(desc_write_seg)].limit[15:0] <= seg_data[15:0];
-                    if (desc_write_seg == SEG_TR)
-                        desc_cache[6].seg_type[1] <= 1'b1;
+                SEG_CMD_SDEH: begin
+                    automatic logic [3:0] sdeh_seg;
+                    automatic logic [2:0] sdeh_idx;
+                    sdeh_seg = effective_target(exec_seg_target);
+                    sdeh_idx = desc_index(sdeh_seg);
+                    if (desc_target_valid(sdeh_seg)) begin
+                        desc_cache[sdeh_idx].base[31:24]  <= seg_data[31:24];
+                        desc_cache[sdeh_idx].G            <= seg_data[23];
+                        desc_cache[sdeh_idx].D_B          <= seg_data[22];
+                        desc_cache[sdeh_idx].limit[19:16] <= seg_data[19:16];
+                    end
                 end
-            end
 
-            SEG_CMD_DESC: begin
-                automatic logic [3:0] full_seg;
-                full_seg = effective_target(seg_target);
-                if (desc_target_valid(full_seg))
-                    desc_cache[desc_index(full_seg)] <= decode_descriptor(desc_lo, desc_hi);
-            end
+                SEG_CMD_SDES: begin
+                    automatic logic [2:0] sdes_idx;
+                    sdes_idx = desc_index(desc_write_seg);
+                    desc_cache[sdes_idx].P          <= seg_data[31];
+                    desc_cache[sdes_idx].DPL        <= seg_data[30:29];
+                    desc_cache[sdes_idx].S          <= seg_data[28];
+                    desc_cache[sdes_idx].seg_type   <= seg_data[27:24];
+                    desc_cache[sdes_idx].base[23:0] <= seg_data[23:0];
+                    desc_cache[sdes_idx].A          <= seg_data[24];
+                end
 
-            SEG_CMD_SBAS: begin
-                if (dt_target_idt)
-                    idt_base <= seg_data;
-                else
-                    gdt_base <= seg_data;
-            end
+                SEG_CMD_SDEL: begin
+                    if (slctr[15:2] == 14'b0) begin
+                        automatic seg_desc_t null_desc;
+                        null_desc = '0;
+                        null_desc.base = 32'hFFFFFFFF;
+                        null_desc.limit = 20'hFFFFF;
+                        null_desc.P = 1'b1;
+                        desc_cache[desc_index(desc_write_seg)] <= null_desc;
+                    end else begin
+                        desc_cache[desc_index(desc_write_seg)].limit[15:0] <= seg_data[15:0];
+                        if (desc_write_seg == SEG_TR)
+                            desc_cache[6].seg_type[1] <= 1'b1;
+                    end
+                end
 
-            SEG_CMD_SLIM_TABLE: begin
-                if (dt_target_idt)
-                    idt_limit <= {4'h0, seg_data[15:0]};
-                else
-                    gdt_limit <= {4'h0, seg_data[15:0]};
-            end
+                SEG_CMD_DESC: begin
+                    automatic logic [3:0] full_seg;
+                    full_seg = effective_target(exec_seg_target);
+                    if (desc_target_valid(full_seg))
+                        desc_cache[desc_index(full_seg)] <= decode_descriptor(desc_lo, desc_hi);
+                end
 
-            default: ;
-        endcase
+                SEG_CMD_SBAS: begin
+                    if (dt_target_idt)
+                        idt_base <= seg_data;
+                    else
+                        gdt_base <= seg_data;
+                end
 
-        if (transition.copy_stack_dpl)
-            desc_cache[2].DPL <= transition.copy_dpl;
+                SEG_CMD_SLIM_TABLE: begin
+                    if (dt_target_idt)
+                        idt_limit <= {4'h0, seg_data[15:0]};
+                    else
+                        gdt_limit <= {4'h0, seg_data[15:0]};
+                end
 
-        if (transition.conform_dpl)
-            desc_cache[1].DPL <= transition.conform_dpl_value;
+                default: ;
+            endcase
+        end
+
+        if (seg_cmd_valid) begin
+            if (transition.copy_stack_dpl)
+                desc_cache[2].DPL <= transition.copy_dpl;
+
+            if (transition.conform_dpl)
+                desc_cache[1].DPL <= transition.conform_dpl_value;
+        end
     end
 end
 

@@ -1932,6 +1932,17 @@ always_ff @(posedge clk) begin
         $fatal(1, "LAR/LLIM/LBAS word executes in a D2 issue cycle: uc_addr=%h ind_op=%0d",
                uc_addr, uc_ind_ctrl[3:0]);
 end
+// The descriptor-cache writes (SBRM, SAR, SLIM, SLIM_TABLE, SBAS, SDEH, SDES,
+// SDEL, DESC) are keyed by the microcode command and target, not by
+// seg_cmd/seg_cmd_target (INIT_SEG in an issue cycle, which drops them). That
+// is exact only while no word carrying one executes in a D2 issue cycle.
+always_ff @(posedge clk) begin
+    if (reset_n && uc_exec && i_issue &&
+        ((uc_seg_cmd >= SEG_CMD_SBRM && uc_seg_cmd <= SEG_CMD_SDEL) ||
+         uc_seg_cmd == SEG_CMD_DESC))
+        $fatal(1, "descriptor-cache write executes in a D2 issue cycle: uc_addr=%h seg_cmd=%0d",
+               uc_addr, uc_seg_cmd);
+end
 // synthesis translate_on
 
 // Execution-relocation view of the microcode segment command.
@@ -1995,15 +2006,17 @@ always_comb begin
     end
 end
 
+// seg_cmd_data is read only by the descriptor-cache writes, which decode the
+// microcode command under uc_exec and never execute in an issue cycle (asserted
+// above), so it carries the microcode payload with no issue mux.
 always_comb begin
+    seg_cmd_data = uc_seg_data;
     if (i_issue) begin
         seg_cmd = SEG_CMD_INIT_SEG;
         seg_cmd_target = init_final_seg;
-        seg_cmd_data = dest_value;
     end else begin
         seg_cmd = uc_seg_cmd;
         seg_cmd_target = uc_seg_target;
-        seg_cmd_data = uc_seg_data;
     end
 end
 
