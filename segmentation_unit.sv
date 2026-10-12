@@ -480,7 +480,12 @@ always_comb begin
         default: llim_result = 32'h0;
     endcase
 end
-assign lbas_result = lar_desc.base;
+// LBAS shares seg_base_for's selector-keyed base mux (the same value for every
+// target but LDT, which seg_base_for does not map, and GDT, where
+// seg_base_for picks the LDT by the selector's TI bit and LBAS reads GDTR).
+assign lbas_result = (seg_target == SEG_LDT) ? desc_cache[7].base :
+                     (seg_target == SEG_GDT) ? gdt_base :
+                                               seg_base_for(seg_target, 1'b0);
 
 // Testbench can't force unpacked array struct elements, so use individual regs
 `ifdef VERILATOR
