@@ -211,7 +211,7 @@ assign ifetch_fault_addr = pf_fault_addr_r;
 // bit i equal k's, the carry into bit i is maj(a, b, a^b^k) at bit i-1 =
 // (a & b) | ((a | b) & ~k); so the sum equals k iff every bit's a^b^k equals
 // that carry, and bit 4 takes the real carry out of the low nibble.
-// tests/equiv/sum_line_eq.v proves it for every input.
+// tests/equiv/spec_line_eq.v proves it for every input.
 function automatic logic sum_line_eq(input logic [31:0] a, input logic [31:0] b,
                                      input logic [31:4] k);
     logic [4:0]  low;
