@@ -360,10 +360,20 @@ assign vipt_is_vga_mem = vipt_match && vipt_tlb_q[0];
 // cycle after it, when vipt_linear_r is the preread's address.
 assign vref_set = vipt_linear_r[14:12];
 wire [16:0] vref_tag = vipt_linear_r[31:15];
-wire [3:0] vref_match = {valid_q[vref_set][3] && (aux_q[3][16:0] == vref_tag),
-                         valid_q[vref_set][2] && (aux_q[2][16:0] == vref_tag),
-                         valid_q[vref_set][1] && (aux_q[1][16:0] == vref_tag),
-                         valid_q[vref_set][0] && (aux_q[0][16:0] == vref_tag)};
+// The auxiliary port's tag compare and valid read, shared by its three
+// readers: the compare tag and the valid bits follow aux_rd_set's owner, so
+// each reader's match is computed exactly when it reads the port (INVLPG's in
+// its invalidate_page cycle, the TR6 lookup's in tlbt_lookup, which implies
+// tlbt_pend_r and !invalidate_page, and the refresh's when vref_refresh can
+// apply: !tlbt_pend_r, and outside the invalidate_page branch).
+wire [16:0] aux_cmp_tag = invalidate_page ? invalidate_tag :
+                          tlbt_pend_r     ? tlbt_tag : vref_tag;
+wire [3:0]  aux_valid  = {valid_q[aux_rd_set][3], valid_q[aux_rd_set][2],
+                          valid_q[aux_rd_set][1], valid_q[aux_rd_set][0]};
+wire [3:0]  aux_tag_eq = {aux_q[3][16:0] == aux_cmp_tag, aux_q[2][16:0] == aux_cmp_tag,
+                          aux_q[1][16:0] == aux_cmp_tag, aux_q[0][16:0] == aux_cmp_tag};
+wire [3:0]  aux_match  = aux_valid & aux_tag_eq;
+wire [3:0] vref_match = aux_match;
 wire       vref_refresh = vipt_fresh_r && vipt_match && !tlbt_pend_r && (|vref_match);
 wire [1:0] vref_way = vref_match[0] ? 2'd0 : vref_match[1] ? 2'd1 :
                       vref_match[2] ? 2'd2 : 2'd3;
@@ -473,10 +483,10 @@ always @(posedge clk)
                update_vpn, lookup_vpn);
 // synthesis translate_on
 
-wire inval_match0 = valid_q[invalidate_set][0] && aux_q[0][16:0] == invalidate_tag;
-wire inval_match1 = valid_q[invalidate_set][1] && aux_q[1][16:0] == invalidate_tag;
-wire inval_match2 = valid_q[invalidate_set][2] && aux_q[2][16:0] == invalidate_tag;
-wire inval_match3 = valid_q[invalidate_set][3] && aux_q[3][16:0] == invalidate_tag;
+wire inval_match0 = aux_match[0];
+wire inval_match1 = aux_match[1];
+wire inval_match2 = aux_match[2];
+wire inval_match3 = aux_match[3];
 
 // TLB state update and PLRU management. Tag/PFN writes are in the MLAB
 // copies above, enabled by tlb_write and victim_way.
@@ -565,8 +575,7 @@ endfunction
 logic [3:0] tlbt_match;
 always_comb begin
     for (int w = 0; w < 4; w++)
-        tlbt_match[w] = (valid_q[tlbt_set][w] == tlbt_tr6_r[11]) &&
-                        (aux_q[w][16:0] == tlbt_tag) &&
+        tlbt_match[w] = (aux_valid[w] == tlbt_tr6_r[11]) && aux_tag_eq[w] &&
                         tlbt_attr_ok(aux_q[w][17], tlbt_tr6_r[10], tlbt_tr6_r[9]) &&
                         tlbt_attr_ok(aux_q[w][18], tlbt_tr6_r[8], tlbt_tr6_r[7]) &&
                         tlbt_attr_ok(aux_q[w][19], tlbt_tr6_r[6], tlbt_tr6_r[5]);
