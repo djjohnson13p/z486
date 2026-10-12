@@ -44,6 +44,7 @@
 `define Z486_KEEP                  (* keep = "true" *)
 `define Z486_NO_PRUNE              (* dont_touch = "true" *)
 `define Z486_REPLICATE             (* max_fanout = 32 *)
+`define Z486_NO_RETIME
 `elsif Z486_ALTERA
 `define Z486_BLOCK_RAM             (* ramstyle = "M10K" *)
 `define Z486_BLOCK_RAM_NO_RW_CHECK (* ramstyle = "M10K, no_rw_check" *)
@@ -51,6 +52,9 @@
 `define Z486_KEEP                  (* preserve *)
 `define Z486_NO_PRUNE              (* noprune *)
 `define Z486_REPLICATE             (* syn_replicate = 1 *)
+// Module attribute: the fitter's physical-synthesis register retiming leaves
+// this entity's registers where the RTL put them.
+`define Z486_NO_RETIME             (* altera_attribute = "-name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF" *)
 `else
 `define Z486_BLOCK_RAM
 `define Z486_BLOCK_RAM_NO_RW_CHECK
@@ -58,6 +62,7 @@
 `define Z486_KEEP
 `define Z486_NO_PRUNE
 `define Z486_REPLICATE
+`define Z486_NO_RETIME
 `endif
 
 `endif

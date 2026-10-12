@@ -3,6 +3,7 @@
 // 32-byte prefetch queue feeding the K1Q decode window and the K2Q literal window
 //
 `include "z486_platform.svh"
+`Z486_NO_RETIME
 module prefetch
     import z486_pkg::*;
 (

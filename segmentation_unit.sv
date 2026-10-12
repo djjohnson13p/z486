@@ -2,6 +2,8 @@
 // Segmentation Unit
 // Descriptor caches, segment limit and access checks, and address formation
 //
+`include "z486_platform.svh"
+`Z486_NO_RETIME
 module segmentation_unit
     import z486_pkg::*;
 (
