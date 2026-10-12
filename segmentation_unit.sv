@@ -35,9 +35,9 @@ module segmentation_unit
     output logic [19:0] idt_limit,
     output logic [31:0] gdt_base,
     output logic [19:0] gdt_limit,
-    output     [31:0]  lar_result,         // LAR combinational readback (keyed by seg_target)
-    output logic [31:0] llim_result,       // LLIM combinational readback (keyed by seg_target)
-    output     [31:0]  lbas_result,        // LBAS combinational readback (keyed by seg_target)
+    output     [31:0]  lar_result,         // LAR combinational readback (keyed by exec_seg_target)
+    output logic [31:0] llim_result,       // LLIM combinational readback (keyed by exec_seg_target)
+    output     [31:0]  lbas_result,        // LBAS combinational readback (keyed by exec_seg_target)
     input              xreg_read_sel,      // the executing MOV r,DRn reads xreg_read_value instead
     input      [31:0]  xreg_read_value,
 
@@ -466,15 +466,19 @@ function automatic [3:0] effective_target(input [3:0] target);
     effective_target = (target == SEG_NONE) ? desc_write_seg : target;
 endfunction
 
-// LAR/LLIM/LBAS: z486 routes these to IND in same cycle
+// LAR/LLIM/LBAS: z486 routes these to IND in same cycle. Their only reader is
+// address_unit's exec_ind_r, under exec with ind_op LAR/LLIM/LBAS, and such a
+// word never executes in a D2 issue cycle (z486.sv asserts it), so the
+// microcode target keys them: seg_target equals exec_seg_target outside an
+// issue cycle, and this keeps i_issue's INIT_SEG mux out of the read-backs.
 seg_desc_t lar_desc;
 wire [7:0] lar_ar_byte = {lar_desc.P, lar_desc.DPL, lar_desc.S, lar_desc.seg_type};
-assign lar_desc = desc_for(seg_target);
+assign lar_desc = desc_for(exec_seg_target);
 assign lar_result = {16'h0, lar_ar_byte, 8'h0};
 always_comb begin
-    case (seg_target)
+    case (exec_seg_target)
         SEG_ES, SEG_CS, SEG_SS, SEG_DS, SEG_FS, SEG_GS, SEG_TR, SEG_LDT:
-            llim_result = expand_raw_limit(raw_limit_for(seg_target, 1'b0));
+            llim_result = expand_raw_limit(raw_limit_for(exec_seg_target, 1'b0));
         SEG_IDT: llim_result = {12'h0, idt_limit};
         SEG_GDT: llim_result = {12'h0, gdt_limit};
         default: llim_result = 32'h0;
@@ -483,9 +487,9 @@ end
 // LBAS shares seg_base_for's selector-keyed base mux (the same value for every
 // target but LDT, which seg_base_for does not map, and GDT, where
 // seg_base_for picks the LDT by the selector's TI bit and LBAS reads GDTR).
-assign lbas_result = (seg_target == SEG_LDT) ? desc_cache[7].base :
-                     (seg_target == SEG_GDT) ? gdt_base :
-                                               seg_base_for(seg_target, 1'b0);
+assign lbas_result = (exec_seg_target == SEG_LDT) ? desc_cache[7].base :
+                     (exec_seg_target == SEG_GDT) ? gdt_base :
+                                                    seg_base_for(exec_seg_target, 1'b0);
 
 // Testbench can't force unpacked array struct elements, so use individual regs
 `ifdef VERILATOR

@@ -1916,6 +1916,20 @@ segmentation_unit seg_unit (
     .au_ind_delta(IND_DELTA)
 );
 
+// synthesis translate_off
+// segmentation_unit keys the LAR/LLIM/LBAS read-backs on uc_seg_target, not
+// on seg_cmd_target (init_final_seg in an issue cycle). That is exact only
+// while no word reading them (ind_op LAR 6, LLIM 7, LBAS 8; the ROM predecode
+// folds MOV r,TRn's LPCR into 8) executes in a D2 issue cycle.
+always_ff @(posedge clk) begin
+    if (reset_n && uc_exec && i_issue &&
+        (uc_ind_ctrl[3:0] == 4'd6 || uc_ind_ctrl[3:0] == 4'd7 ||
+         uc_ind_ctrl[3:0] == 4'd8))
+        $fatal(1, "LAR/LLIM/LBAS word executes in a D2 issue cycle: uc_addr=%h ind_op=%0d",
+               uc_addr, uc_ind_ctrl[3:0]);
+end
+// synthesis translate_on
+
 // Execution-relocation view of the microcode segment command.
 always_comb begin
     uc_seg_cmd = SEG_CMD_NONE;
