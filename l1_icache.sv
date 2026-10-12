@@ -203,7 +203,6 @@ wire flush_block = flush_req_new | flush_pending_r | flush_busy_r;
 assign flush_busy = flush_busy_r;
 assign flush_done = flush_done_r;
 
-reg [127:0] line_r;
 reg resp_valid_r;
 reg ready_r;
 
@@ -399,7 +398,13 @@ always_comb begin
                                              patch_data, patch_be);
 end
 
-assign cpu_line = lookup_read_hit_now ? lookup_way_line : line_r;
+// A fill's response (resp_valid_r, the cycle after its last beat) returns
+// fill_line: the response edge wrote it with the same value a separate line_r
+// copy used to take, and nothing writes fill_line again before a new miss
+// enters S_FILL. Every reader samples cpu_line only with cpu_resp_valid
+// (paging_unit's pf_rdata: "the prefetcher samples pf_rdata only on an ack
+// edge", which is a completion cycle for every ack that carries data).
+assign cpu_line = lookup_read_hit_now ? lookup_way_line : fill_line;
 assign cpu_resp_valid = lookup_read_hit_now || resp_valid_r;
 
 wire tag_reset_write = (state == S_RESET_INIT);
@@ -535,7 +540,6 @@ always_ff @(posedge clk) begin
         fill_uncached_r <= 1'b0;
         ready_r <= 1'b0;
         resp_valid_r <= 1'b0;
-        line_r <= 128'h0;
         mem_valid_r <= 1'b0;
         mem_addr_r <= 32'h0;
         mem_burstcount_r <= 8'h0;
@@ -713,7 +717,6 @@ always_ff @(posedge clk) begin
                     end
                 end else if (mem_line_resp_valid) begin
                     fill_line <= wide_line_next;
-                    line_r <= wide_line_next;
                     resp_valid_r <= 1'b1;
                     // A snoop clear owns the way write port this cycle; defer
                     // the install instead of dropping the line.
@@ -729,7 +732,6 @@ always_ff @(posedge clk) begin
                     fill_line <= fill_line_next;
 
                     if (fill_count == {WORD_OFFSET_BITS{1'b1}}) begin
-                        line_r <= fill_line_next;
                         resp_valid_r <= 1'b1;
                         // Only the tag-RAM fill write sets valid for fill_way.
                         // Do not restore any other way from the fill-start
