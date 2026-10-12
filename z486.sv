@@ -674,6 +674,7 @@ wire       jcc_fold_active;            // not-taken Jcc occupies reclaimed slot
 // These nets feed module ports before their generating logic appears below.
 // Declare them here so XSim cannot create disconnected implicit one-bit nets.
 wire [31:0] spec_target_lin;
+wire [31:0] spec_target_off;          // spec_target_lin's offset addend (CS_base + it)
 wire        pf_spec_req;
 reg         pf_spec_owner_r;
 wire        pf_spec_store;
@@ -1089,6 +1090,8 @@ prefetch prefetch_inst (
     // z486 speculative branch-target line
     .spec_req(pf_spec_req),
     .spec_linear(spec_target_lin),
+    .spec_lin_a(CS_base),
+    .spec_lin_b(spec_target_off),
     .spec_owner(pf_spec_owner_r),
     .spec_store_valid(pf_spec_store),
     .spec_store_line(pf_spec_store_line),
@@ -1132,7 +1135,8 @@ always_ff @(posedge clk) begin
     if (ret_issue)
         ret_pred_r <= rsb[rsb_top_r];
 end
-assign spec_target_lin = CS_base + (d2_ret_pred ? rsb[rsb_top_r] : spec_target_eip);
+assign spec_target_off = d2_ret_pred ? rsb[rsb_top_r] : spec_target_eip;
+assign spec_target_lin = CS_base + spec_target_off;
 // A relative branch in D2 requests its target line; an EIP write cancels the request.
 wire        eip_write_now = branch_ustep_redirect || ret_redirect ||
                             (uc_exec && ((uc_dest == DEST_EIP) || (uc_dest == DEST_eIP) ||

@@ -60,6 +60,8 @@ module prefetch
 
     input             spec_req,
     input      [31:0] spec_linear,
+    input      [31:0] spec_lin_a,    // spec_linear == spec_lin_a + spec_lin_b (the
+    input      [31:0] spec_lin_b,    // segment base and the target offset)
     input             spec_owner,    // the currently-executing instruction is the
                                      // one that requested the buffered/in-flight
                                      // spec fetch: its taken-flush address equals
@@ -205,19 +207,47 @@ wire pf_can_fetch_after_flush = q_flush && !pf_suspend && !pf_inflight;
 assign ifetch_fault_code = pf_fault_code_r;
 assign ifetch_fault_addr = pf_fault_addr_r;
 
+// (a + b)[31:4] == k without the sum's carry chain. If the sum's bits below
+// bit i equal k's, the carry into bit i is maj(a, b, a^b^k) at bit i-1 =
+// (a & b) | ((a | b) & ~k); so the sum equals k iff every bit's a^b^k equals
+// that carry, and bit 4 takes the real carry out of the low nibble.
+// tests/equiv/sum_line_eq.v proves it for every input.
+function automatic logic sum_line_eq(input logic [31:0] a, input logic [31:0] b,
+                                     input logic [31:4] k);
+    logic [4:0]  low;
+    logic [31:4] cin;
+    begin
+        low = {1'b0, a[3:0]} + {1'b0, b[3:0]};
+        cin[4] = low[4];
+        cin[31:5] = (a[30:4] & b[30:4]) | ((a[30:4] | b[30:4]) & ~k[30:4]);
+        sum_line_eq = ((a[31:4] ^ b[31:4] ^ k) == cin);
+    end
+endfunction
+
+// The target-line compares take the two addends, so the match decisions (and
+// the victim swap's 157-wide enable) do not wait for spec_linear's adder.
+wire spec_addr_hit   = sum_line_eq(spec_lin_a, spec_lin_b, spec_addr);
+wire spec_b_addr_hit = sum_line_eq(spec_lin_a, spec_lin_b, spec_b_addr);
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && spec_req && (spec_linear !== spec_lin_a + spec_lin_b))
+        $fatal(1, "prefetch: spec_linear %h is not spec_lin_a %h + spec_lin_b %h",
+               spec_linear, spec_lin_a, spec_lin_b);
+// synthesis translate_on
+
 wire spec_match_now = spec_req && spec_valid && !spec_poison && !spec_inflight &&
-                      (spec_addr == spec_linear[31:4]);
+                      spec_addr_hit;
 // A request that hits the victim entry swaps it into the active buffer
 // instead of fetching. Skip the swap in a cycle with any store or global
 // kill, so a stale victim line can never become active.
 wire spec_b_match = spec_req && !spec_match_now && spec_b_valid &&
                     !spec_inflight && !spec_pend &&
                     !spec_store_valid && !spec_global_kill &&
-                    (spec_b_addr == spec_linear[31:4]);
+                    spec_b_addr_hit;
 // A request for the line already in flight (an older branch's target in the
 // same line) re-owns that fetch, as spec_match_now re-owns a buffered line.
 wire spec_inflight_match = spec_req && spec_inflight && !spec_poison && !spec_pend &&
-                           (spec_addr == spec_linear[31:4]);
+                           spec_addr_hit;
 wire spec_want   = ((spec_req && !spec_match_now && !spec_b_match && !spec_inflight_match) ||
                     spec_pend);
 wire spec_launch = spec_want && !pf_inflight && !q_flush && !pf_suspend &&
