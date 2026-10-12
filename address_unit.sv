@@ -268,6 +268,11 @@ always_comb begin
     endcase
 end
 
+// The IND two-term sum of INDOP_PLUS_ALU / INDOP_PLUS / INDOP_IN_PLUS_D: the
+// same operand pair exec_linear's three-term relocation adds (selected above
+// by ind_op), so the IND update needs one adder, not one per op.
+wire [31:0] exec_ind_sum = exec_linear_a + exec_linear_b;
+
 // Execution owns a separate relocation register. Updating this shadow in a
 // simultaneous issue cycle is harmless because linear_owner_issue_r selects
 // the newly issued address; removing issue priority here breaks the D2-to-EX
@@ -302,17 +307,13 @@ always_ff @(posedge clk) begin
         case (ind_op)
             INDOP_PLUS_ALU: begin
                 automatic logic [31:0] next_ind;
-                automatic logic [31:0] operand1;
-                automatic logic [31:0] operand2;
-                operand1 = ind_source_irf2 ? ind : source_value;
-                operand2 = jcc_word ? alu_value_hold : alu_value;
                 if (ind_dest_class == INDDEST_DESSTK)
                     mask16 = !pe || !ss_stack32;
                 else if (ind_dest_class == INDDEST_DESCOD)
                     mask16 = !is_dword;
                 else if (ind_dest_class == INDDEST_DESSEG)
                     mask16 = !exec_addr32;
-                next_ind = operand1 + operand2;
+                next_ind = exec_ind_sum;
                 if (mask16 && (ind_dest_class == INDDEST_DESSTK ||
                                ind_dest_class == INDDEST_DESCOD ||
                                ind_dest_class == INDDEST_DESSEG))
@@ -329,13 +330,13 @@ always_ff @(posedge clk) begin
                 exec_ind_r <= next_ind;
             end
             INDOP_PLUS: begin
-                automatic logic [31:0] next_ind = ind + alu_value;
+                automatic logic [31:0] next_ind = exec_ind_sum;
                 if (!pe && !exec_addr32)
                     next_ind = {16'd0, next_ind[15:0]};
                 exec_ind_r <= next_ind;
             end
             INDOP_IN_PLUS_D: begin
-                automatic logic [31:0] next_ind = ind + ind_delta;
+                automatic logic [31:0] next_ind = exec_ind_sum;
                 if (!pe ? !exec_addr32
                         : !(descsw_mode ? cs_stack32 : ss_stack32))
                     next_ind = {16'd0, next_ind[15:0]};
@@ -364,8 +365,8 @@ wire [31:0] issue_stack_offset = instr.stack_dir
     ? (ss_stack32 ? forwarded_esp : {16'd0, forwarded_esp[15:0]})
     : (ss_stack32 ? forwarded_esp - (instr.data32 ? 32'd4 : 32'd2)
                   : {16'd0, forwarded_esp[15:0] - (instr.data32 ? 16'd4 : 16'd2)});
-assign issue_mem_linear = instr.stack_op ? relocate_issue(issue_stack_offset)
-                        : instr.has_moffs ? relocate_issue(instr.immediate)
+assign issue_mem_linear = (instr.stack_op || instr.has_moffs)
+                        ? relocate_issue(instr.stack_op ? issue_stack_offset : instr.immediate)
                         : effective_linear;
 
 always_ff @(posedge clk) begin
