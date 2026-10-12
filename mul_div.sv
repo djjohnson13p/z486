@@ -355,7 +355,11 @@ task automatic div7_calc(
         a_msb   = a[width-1];
         b_msb   = d[width-1];
         res_msb = res[width-1];
-        carry   = r_nonneg_prev_in ? (a < d) : ({1'b0, a} + {1'b0, d}) >> width != 0;
+        // The step's carry/borrow out of the operand width is the carry into
+        // bit `width` of the step's own add/subtract (r_alu_a and a agree
+        // below it, and d is zero above it): sum bit ^ operand bit, for both
+        // the add and the subtract (borrow = a < d = no carry).
+        carry   = r_next_full[width] ^ r_alu_a[width];
         flags_out[0] = carry;
         flags_out[1] = ~^res[7:0];
         flags_out[2] = a[4] ^ d[4] ^ res[4];
