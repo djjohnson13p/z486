@@ -212,7 +212,15 @@ decoder_work_t handoff_d2;
 always_comb begin
     handoff_d2 = handoff_work;
     handoff_d2.entry.entry_point = handoff_entry_point;
-    handoff_d2.entry.ucode_action = recipe_action(handoff_entry_point);
+    // recipe_entry_action decodes the action from the raw entry with the
+    // overlay qualifiers beside it (proved equal to recipe_action of
+    // handoff_entry_point by tests/equiv/recipe_entry_action.v), so the action
+    // compares do not wait for the overlay's 12-bit entry mux.
+    handoff_d2.entry.ucode_action = recipe_entry_action(
+        handoff_work.entry.entry_point,
+        handoff_work.entry.opcode,
+        handoff_work.entry.modrm,
+        handoff_work.entry.rep_lock == PREFIX_LOCK);
     // Resolve the direct ALU memory-load class in D1. Re-decoding opcode and
     // ModR/M from i_bus put this classification in series with VIPT hit
     // resolution and same-edge chained issue on the microcode-ROM address path.

@@ -74,6 +74,34 @@ function automatic logic [2:0] recipe_action(input logic [11:0] entry);
     endcase
 endfunction
 
+// recipe_action(lock ? entry : recipe_effective_entry(entry, opcode, modrm)),
+// decoded from the raw entry: each action ORs its own entry compares with the
+// overlay sources (qualified) that redirect to it.
+function automatic logic [2:0] recipe_entry_action(
+    input logic [11:0] entry,
+    input logic [7:0] opcode,
+    input logic [7:0] modrm,
+    input logic lock
+);
+    recipe_entry_action = RECIPE_ACTION_NONE;
+    if ((entry == 12'h9C5) ||
+        (entry == 12'h9D1) ||
+        (entry == 12'h9D3) ||
+        ((entry == 12'h4D7) && !lock && ((opcode == 8'hD8) || ((opcode == 8'hD9) && (modrm[5:3] == 3'd0)))) ||
+        ((entry == 12'h4C1) && !lock && (modrm[7:6] == 2'b11)) ||
+        ((entry == 12'h53C) && !lock && ((modrm[7:6] != 2'b11) && ((opcode == 8'hD9) || (opcode == 8'hDB)) && ((modrm[5:3] == 3'd2) || (modrm[5:3] == 3'd3)))))
+        recipe_entry_action = recipe_entry_action | RECIPE_ACTION_X87_OVERLAY;
+    if ((entry == 12'h9C7))
+        recipe_entry_action = recipe_entry_action | RECIPE_ACTION_INVLPG;
+    if ((entry == 12'h9CB) ||
+        (entry == 12'h9CE) ||
+        ((entry == 12'h04A) && !lock && (modrm[7:6] != 2'b11)) ||
+        ((entry == 12'h04E) && !lock && ((modrm[7:6] != 2'b11) && ((((opcode == 8'hF6) || (opcode == 8'hF7)) && ((modrm[5:3] == 3'd2) || (modrm[5:3] == 3'd3))) || (((opcode == 8'hFE) || (opcode == 8'hFF)) && ((modrm[5:3] == 3'd0) || (modrm[5:3] == 3'd1)))))))
+        recipe_entry_action = recipe_entry_action | RECIPE_ACTION_RMW_FAST;
+    if ((entry == 12'h9F3))
+        recipe_entry_action = recipe_entry_action | RECIPE_ACTION_CACHE_FLUSH;
+endfunction
+
 function automatic logic [2:0] recipe_early_kind(input logic [11:0] entry);
     unique case (entry)
         12'h003, 12'h005, 12'h01D, 12'h01F, 12'h021, 12'h023, 12'h025, 12'h0F9, 12'h0FC, 12'h0FF, 12'h102, 12'h105, 12'h1E8, 12'h1F0, 12'h9C9, 12'h9D1: recipe_early_kind = RECIPE_EARLY_NONE;

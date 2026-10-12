@@ -1100,6 +1100,48 @@ def render_recipe_svh(words: list[int]) -> str:
         "    endcase",
         "endfunction",
         "",
+    ]
+    # recipe_entry_action(e, opcode, modrm, lock) ==
+    # recipe_action(lock ? e : recipe_effective_entry(e, opcode, modrm)) for every
+    # input (tests/equiv/recipe_entry_action.v proves it on this file's text). Each
+    # action is an OR of finished entry compares on the RAW entry: the action
+    # entries themselves, and every overlay source whose qualifier redirects it to
+    # an entry with that action. The compares run beside the qualifier decode, so
+    # the 12-bit overlay mux is not in series with the action decode.
+    action_of: dict[int, RecipeAction] = {r.entry: r.action for r in OVERLAY_RECIPES}
+    action_of.update(ENTRY_ACTIONS)
+    sources = {r.source_entry for r in OVERLAY_RECIPES} | {0x0B6}
+    for src in sorted(sources):
+        if src in action_of:
+            raise ValueError(f"overlay source 0x{src:03X} carries an action itself")
+    lines += [
+        "// recipe_action(lock ? entry : recipe_effective_entry(entry, opcode, modrm)),",
+        "// decoded from the raw entry: each action ORs its own entry compares with the",
+        "// overlay sources (qualified) that redirect to it.",
+        "function automatic logic [2:0] recipe_entry_action(",
+        "    input logic [11:0] entry,",
+        "    input logic [7:0] opcode,",
+        "    input logic [7:0] modrm,",
+        "    input logic lock",
+        ");",
+        "    recipe_entry_action = RECIPE_ACTION_NONE;",
+    ]
+    for action in RecipeAction:
+        if action == RecipeAction.NONE:
+            continue
+        terms = [f"(entry == 12'h{e:03X})"
+                 for e, a in sorted(action_of.items()) if a == action]
+        for recipe in OVERLAY_RECIPES:
+            if recipe.action == action:
+                terms.append(f"((entry == 12'h{recipe.source_entry:03X}) && !lock && "
+                             f"({overlay_qualifier_expr(recipe)}))")
+        if not terms:
+            continue
+        lines.append("    if (" + " ||\n        ".join(terms) + ")")
+        lines.append(f"        recipe_entry_action = recipe_entry_action | RECIPE_ACTION_{action.name};")
+    lines += [
+        "endfunction",
+        "",
         "function automatic logic [2:0] recipe_early_kind(input logic [11:0] entry);",
         "    unique case (entry)",
     ]

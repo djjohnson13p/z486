@@ -13,10 +13,14 @@ input bit.  Each proof is run twice:
 
 The models restate the RTL expressions they prove; each file names its RTL
 site.  A model whose first line is `// check-equiv: tempinduct` is sequential
-and is proved by temporal induction from its declared power-up values.  yosys
-is required: a missing yosys is a FAIL, never a skip.
+and is proved by temporal induction from its declared power-up values.  A line
+`// check-equiv: functions <file> <name>...` (file relative to the model)
+pastes those functions' text from a GENERATED RTL file at the model's
+`// @@FUNCTIONS@@` line, so the proof runs on the shipped text rather than a
+restatement.  yosys is required: a missing yosys is a FAIL, never a skip.
 """
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -25,11 +29,40 @@ HERE = pathlib.Path(__file__).resolve().parent
 EQUIV = HERE / "equiv"
 
 
+def extract_functions(src: pathlib.Path, names: list[str]) -> str:
+    text = src.read_text()
+    out = []
+    for name in names:
+        m = re.search(r"^function automatic[^\n]*\b" + re.escape(name) + r"\b.*?^endfunction\s*$",
+                      text, re.S | re.M)
+        if not m:
+            raise SystemExit(f"check-equiv: function {name} not found in {src}")
+        out.append(m.group(0))
+    return "\n".join(out)
+
+
+def model_source(path: pathlib.Path) -> pathlib.Path:
+    """The model as yosys reads it: with any `functions` directive expanded."""
+    text = path.read_text()
+    m = re.search(r"^// check-equiv: functions (\S+) (.+)$", text, re.M)
+    if not m:
+        return path
+    funcs = extract_functions((path.parent / m.group(1)).resolve(), m.group(2).split())
+    if "// @@FUNCTIONS@@" not in text:
+        raise SystemExit(f"check-equiv: {path.name} has no // @@FUNCTIONS@@ line")
+    out_dir = HERE / "obj_dir" / "equiv"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / path.name
+    out.write_text(text.replace("// @@FUNCTIONS@@", funcs))
+    return out
+
+
 def run(path: pathlib.Path, mutant: int) -> bool:
     top = path.stem
     # A model whose first line is "// check-equiv: tempinduct" is sequential: it
     # is proved by temporal induction from its declared power-up values.
     seq = path.read_text().startswith("// check-equiv: tempinduct")
+    path = model_source(path)
     sat = ("sat -tempinduct -prove mismatch 0 -verify" if seq
            else "sat -prove mismatch 0 -verify -show-inputs")
     script = (f"read_verilog -sv {path}; chparam -set MUTANT {mutant} {top}; "
