@@ -90,6 +90,10 @@ module gpr_write_merge
     // M3 ALU's add/logic result (and its EFLAGS.CF carry-in) on the commit path
     // only takes it off every forwarding cone, where it was never selected.
     input  logic [31:0]  fwd_wb,
+    // Producer 3's view hit per GPR byte [r*4 + b], registered by the caller
+    // with the write-back: v_wb && !wb_is_alu && byte b of register r in its
+    // lanes (the hit3 && !wb_is_alu below, fused against it).
+    input  logic [31:0]  hitv3_wb,
 
     // Producer 4: delay-slot bypass (views only).
     input  logic         v_dly,
@@ -309,7 +313,16 @@ for (r = 0; r < 8; r++) begin : g_reg
         wire hit6 = v_sigsrc && en6[b];
         wire hit7 = v_esp   && en7[b];
 
-        wire hitv3 = hit3 && !wb_is_alu;
+        // The views' producer-3 hit is the caller's registered decode: the
+        // size compare, the register decode and !wb_is_alu are not in front
+        // of the view muxes (C4/C4x: vipt_load_wb_size_r/dst_r -> hitv3).
+        wire hitv3 = hitv3_wb[r*4 + b];
+        // synthesis translate_off
+        always_comb
+            if (hitv3 !== (hit3 && !wb_is_alu))
+                $fatal(1, "GPR MERGE HITV3: reg %0d byte %0d registered %b, decoded %b",
+                       r, b, hitv3, hit3 && !wb_is_alu);
+        // synthesis translate_on
 
         // commit_value/pulse_value are defined ONLY in the lanes their wmask sets: the one
         // consumer (data_unit's commit_merged) writes a byte lane only under its mask bit, and

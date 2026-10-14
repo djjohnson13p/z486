@@ -108,6 +108,10 @@ module data_access
     // The write-back's byte-normalized GPR one-hot, gated by its valid:
     // = vipt_load_wb_valid_r ? 8'h01 << norm(dst, size) : 0, every cycle.
     output logic [7:0]              vipt_load_wb_wmask_r,
+    // The write-back's forwarding-view hits per GPR byte, [r*4 + b]: valid, not
+    // an M3 ALU result, register r = norm(dst, size), byte b in its lanes
+    // (gpr_write_merge hitv3), registered with the write-back.
+    output logic [31:0]             vipt_load_wb_view_hit_r,
     // D2 instruction and issue
     input  logic                    d2_vipt_ea_hazard,
     // An older deferred memory token owns this load's destination and its
@@ -297,6 +301,18 @@ function automatic [7:0] wb_wmask_of(input [2:0] dst, input [1:0] size);
     wb_wmask_of = 8'h01 << ((size == 2'd0) ? {1'b0, dst[1:0]} : dst);
 endfunction
 
+// gpr_write_merge's producer-3 view hit for every GPR byte, from the fields
+// the write-back registers take (dst_norm(3), be_of_size and !wb_is_alu).
+function automatic [31:0] wb_view_hit_of(input [2:0] dst, input [1:0] size, input is_alu);
+    logic [2:0] r;
+    logic [3:0] be;
+    begin
+        r  = (size == 2'd0) ? {1'b0, dst[1:0]} : dst;
+        be = (size == 2'd0) ? (dst[2] ? 4'h2 : 4'h1) : (size == 2'd1) ? 4'h3 : 4'hF;
+        wb_view_hit_of = is_alu ? 32'h0 : ({28'h0, be} << {r, 2'b00});
+    end
+endfunction
+
 // synthesis translate_off
 wire [2:0] vipt_load_wb_norm_dst = (vipt_load_wb_size_r == 2'd0)
                                   ? {1'b0, vipt_load_wb_dst_r[1:0]}
@@ -464,6 +480,7 @@ always_ff @(posedge clk) begin
         vipt_slow_phys_r <= 32'd0;
         vipt_load_wb_valid_r <= 1'b0;
         vipt_load_wb_wmask_r <= 8'd0;
+        vipt_load_wb_view_hit_r <= 32'd0;
         vipt_load_ex_probed_r <= 1'b0;
         vipt_load_wb_data_r <= 32'd0;
         vipt_load_wb_ret_r <= 1'b0;
@@ -477,6 +494,7 @@ always_ff @(posedge clk) begin
     end else begin
         vipt_load_wb_valid_r <= 1'b0;
         vipt_load_wb_wmask_r <= 8'd0;
+        vipt_load_wb_view_hit_r <= 32'd0;
 
         if (vipt_load_wb_valid_r)
             vipt_load_overlap_r <= 1'b0;
@@ -531,6 +549,9 @@ always_ff @(posedge clk) begin
                 vipt_load_wb_valid_r <= 1'b1;
                 vipt_load_wb_wmask_r <= wb_wmask_of(vipt_load_ex_r.dst,
                                                     vipt_load_ex_r.write_size);
+                vipt_load_wb_view_hit_r <= wb_view_hit_of(vipt_load_ex_r.dst,
+                                                          vipt_load_ex_r.write_size,
+                                                          vipt_load_ex_r.is_alu);
                 // A RET writes its new ESP through the load port and keeps
                 // the loaded target for the redirect.
                 vipt_load_wb_data_r <= vipt_load_ex_r.is_ret ? vipt_load_ex_r.ret_esp
@@ -603,6 +624,9 @@ always_ff @(posedge clk) begin
             vipt_load_wb_valid_r <= 1'b1;
             vipt_load_wb_wmask_r <= wb_wmask_of(vipt_load_slow_r.dst,
                                                 vipt_load_slow_r.write_size);
+            vipt_load_wb_view_hit_r <= wb_view_hit_of(vipt_load_slow_r.dst,
+                                                      vipt_load_slow_r.write_size,
+                                                      vipt_load_slow_r.is_alu);
             vipt_load_wb_data_r <= vipt_load_slow_r.is_ret ? vipt_load_slow_r.ret_esp
                                  : format_hardwired_load(
                 OPR_R, 2'd0, vipt_load_slow_r.mem_size,
@@ -623,6 +647,7 @@ always_ff @(posedge clk) begin
             vipt_load_slow_wait_r <= 1'b0;
             vipt_load_wb_valid_r <= 1'b0;
             vipt_load_wb_wmask_r <= 8'd0;
+            vipt_load_wb_view_hit_r <= 32'd0;
             vipt_load_ex_probed_r <= 1'b0;
             vipt_load_overlap_r <= 1'b0;
         end
@@ -645,6 +670,11 @@ always_ff @(posedge clk) begin
                     (vipt_load_wb_valid_r ? wb_wmask_of(vipt_load_wb_dst_r, vipt_load_wb_size_r)
                                           : 8'h00)))
         $fatal(1, "VIPT WB write mask %b is not the valid write-back's", vipt_load_wb_wmask_r);
+    if (reset_n && (vipt_load_wb_view_hit_r !==
+                    (vipt_load_wb_valid_r ? wb_view_hit_of(vipt_load_wb_dst_r, vipt_load_wb_size_r,
+                                                           vipt_load_wb_is_alu_r)
+                                          : 32'h0)))
+        $fatal(1, "VIPT WB view hits %h are not the valid write-back's", vipt_load_wb_view_hit_r);
 end
 // synthesis translate_on
 
