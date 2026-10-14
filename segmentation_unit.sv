@@ -18,6 +18,9 @@ module segmentation_unit
     input      [3:0]   seg_target,         // Target segment (SEG_ES..SEG_GDT, SEG_NONE)
     input      [3:0]   exec_seg_cmd,       // Microcode command, independent of issue INIT_SEG
     input      [3:0]   exec_seg_target,    // Microcode target, independent of issue INIT_SEG
+    input              exec_cmd_valid,     // the microcode command executes (seg_cmd_valid without the issue)
+    input              issue_cmd,          // the issue-time INIT_SEG executes (seg_cmd's issue select)
+    input      [3:0]   issue_target,       // its target (seg_target in an issue cycle)
     input              init_addr32,        // D2 instruction address size for INIT_SEG
     input              init_stack_op,      // D2 stack operation for INIT_SEG
     input              clear_descsw,       // DESSTK mode bit for UPDATE_SEG
@@ -239,6 +242,101 @@ always_comb begin
                 seg_base_pending_c  = CS_base;
                 addr_size_pending_c = pe ? desc_cache[SEG_CS].D_B : i_addr32_r;
                 is_dtable_pending_c = 1'b0;
+            end
+            default: ;                         // SPCR/others: keep stssaf-or-hold
+        endcase
+    end
+end
+// The register update is written once per command source and selected by
+// the issue: the issue-time INIT_SEG (issue_cmd, issue_target) and the
+// microcode command (exec_cmd_valid, exec_seg_cmd, exec_seg_target). z486.sv
+// forms seg_cmd_valid = issue || exec, seg_cmd = issue ? INIT_SEG : exec and
+// seg_target = issue ? issue_target : exec target, so each arm below is the
+// former update (and its pending relocation) with that arm's command
+// substituted, and the late issue decision (VIPT hit -> i_issue) selects
+// finished values instead of steering the target muxes in front of
+// seg_limit_r/seg_base_r. The former text runs as a shadow register set in
+// simulation and must agree every cycle.
+reg [31:0] seg_base_pend_issue, seg_base_pend_exec;
+reg        addr_size_pend_issue, addr_size_pend_exec;
+reg        is_dtable_pend_issue, is_dtable_pend_exec;
+always_comb begin
+    seg_base_pend_issue  = seg_base_r;         // hold when no command
+    addr_size_pend_issue = addr_size;
+    is_dtable_pend_issue = is_dtable;
+    if (1'b1) begin
+        if (stssaf_pulse && seg_sel == SEG_SS)
+            seg_base_pend_issue = SS_base;      // (does not change addr_size/is_dtable)
+        case (SEG_CMD_INIT_SEG)
+            SEG_CMD_INIT_SEG: begin
+                seg_base_pend_issue  = seg_base_for(issue_target, 1'b0);
+                addr_size_pend_issue = (init_stack_op && pe) ? desc_cache[SEG_SS].D_B
+                                                            : init_addr32;
+                is_dtable_pend_issue = 1'b0;
+            end
+            SEG_CMD_UPDATE_SEG: begin
+                is_dtable_pend_issue = (issue_target == SEG_IDT || issue_target == SEG_GDT);
+                if (clear_descsw) begin
+                    seg_base_pend_issue  = seg_base_for(issue_target, 1'b0);
+                    addr_size_pend_issue = pe ? desc_cache[SEG_SS].D_B : i_addr32_r;
+                end else if (issue_target == SEG_IO) begin
+                    // I/O is not a segmented memory offset. Preserve reserved
+                    // 32-bit coprocessor ports; IN/OUT sources are already
+                    // zero-extended to their architectural port width.
+                    seg_base_pend_issue  = 32'h0;
+                    addr_size_pend_issue = 1'b1;
+                end else begin
+                    seg_base_pend_issue  = seg_base_for(issue_target, descsw_mode);
+                    addr_size_pend_issue = ((i_stack_op_r || stack_push_mode) && pe && issue_target == SEG_SS)
+                                          ? (descsw_mode ? desc_cache[SEG_CS].D_B : desc_cache[SEG_SS].D_B)
+                                          : i_addr32_r;
+                end
+            end
+            SEG_CMD_DESCSW: begin
+                seg_base_pend_issue  = CS_base;
+                addr_size_pend_issue = pe ? desc_cache[SEG_CS].D_B : i_addr32_r;
+                is_dtable_pend_issue = 1'b0;
+            end
+            default: ;                         // SPCR/others: keep stssaf-or-hold
+        endcase
+    end
+end
+always_comb begin
+    seg_base_pend_exec  = seg_base_r;         // hold when no command
+    addr_size_pend_exec = addr_size;
+    is_dtable_pend_exec = is_dtable;
+    if (exec_cmd_valid) begin
+        if (stssaf_pulse && seg_sel == SEG_SS)
+            seg_base_pend_exec = SS_base;      // (does not change addr_size/is_dtable)
+        case (exec_seg_cmd)
+            SEG_CMD_INIT_SEG: begin
+                seg_base_pend_exec  = seg_base_for(exec_seg_target, 1'b0);
+                addr_size_pend_exec = (init_stack_op && pe) ? desc_cache[SEG_SS].D_B
+                                                            : init_addr32;
+                is_dtable_pend_exec = 1'b0;
+            end
+            SEG_CMD_UPDATE_SEG: begin
+                is_dtable_pend_exec = (exec_seg_target == SEG_IDT || exec_seg_target == SEG_GDT);
+                if (clear_descsw) begin
+                    seg_base_pend_exec  = seg_base_for(exec_seg_target, 1'b0);
+                    addr_size_pend_exec = pe ? desc_cache[SEG_SS].D_B : i_addr32_r;
+                end else if (exec_seg_target == SEG_IO) begin
+                    // I/O is not a segmented memory offset. Preserve reserved
+                    // 32-bit coprocessor ports; IN/OUT sources are already
+                    // zero-extended to their architectural port width.
+                    seg_base_pend_exec  = 32'h0;
+                    addr_size_pend_exec = 1'b1;
+                end else begin
+                    seg_base_pend_exec  = seg_base_for(exec_seg_target, descsw_mode);
+                    addr_size_pend_exec = ((i_stack_op_r || stack_push_mode) && pe && exec_seg_target == SEG_SS)
+                                          ? (descsw_mode ? desc_cache[SEG_CS].D_B : desc_cache[SEG_SS].D_B)
+                                          : i_addr32_r;
+                end
+            end
+            SEG_CMD_DESCSW: begin
+                seg_base_pend_exec  = CS_base;
+                addr_size_pend_exec = pe ? desc_cache[SEG_CS].D_B : i_addr32_r;
+                is_dtable_pend_exec = 1'b0;
             end
             default: ;                         // SPCR/others: keep stssaf-or-hold
         endcase
@@ -698,12 +796,12 @@ always_ff @(posedge clk) begin
         tss_access_flag <= 1'b0;
         i_addr32_r <= 1'b0;
         i_stack_op_r <= 1'b0;
-    end else if (seg_cmd_valid) begin
-        seg_base_r <= seg_base_pending_c;
-        addr_size  <= addr_size_pending_c;
-        is_dtable  <= is_dtable_pending_c;
+    end else if (issue_cmd) begin
+        seg_base_r <= seg_base_pend_issue;
+        addr_size  <= addr_size_pend_issue;
+        is_dtable  <= is_dtable_pend_issue;
         // STSSAF/CTSSAF arrive as aluop sidebands so the same uop's busop
-        // seg_cmd still executes (608: CTSSAF+SDEL dropped the new-stack
+        // SEG_CMD_INIT_SEG still executes (608: CTSSAF+SDEL dropped the new-stack
         // limit, leaving a stale CS limit for the gate frame pushes).
         // Applied before the case so a same-cycle command wins conflicts.
         if (stssaf_pulse) begin
@@ -717,12 +815,12 @@ always_ff @(posedge clk) begin
         end
         if (ctssaf_pulse)
             tss_access_flag <= 1'b0;
-        case (seg_cmd)
+        case (SEG_CMD_INIT_SEG)
             SEG_CMD_INIT_SEG: begin
-                seg_sel <= seg_target;
-                seg_is_io <= (seg_target == SEG_IO);
-                seg_limit_r <= seg_limit_for(seg_target, 1'b0);
-                {seg_ed_r, seg_big_r} <= ed_big_for(seg_target, 1'b0);
+                seg_sel <= issue_target;
+                seg_is_io <= (issue_target == SEG_IO);
+                seg_limit_r <= seg_limit_for(issue_target, 1'b0);
+                {seg_ed_r, seg_big_r} <= ed_big_for(issue_target, 1'b0);
                 i_addr32_r <= init_addr32;
                 i_stack_op_r <= init_stack_op;
                 stack_push_mode <= 1'b0;
@@ -730,15 +828,74 @@ always_ff @(posedge clk) begin
             end
 
             SEG_CMD_UPDATE_SEG: begin
-                seg_sel <= seg_target;
-                seg_is_io <= (seg_target == SEG_IO);
+                seg_sel <= issue_target;
+                seg_is_io <= (issue_target == SEG_IO);
                 if (clear_descsw) begin
                     descsw_mode <= 1'b0;
-                    seg_limit_r <= seg_limit_for(seg_target, 1'b0);
-                    {seg_ed_r, seg_big_r} <= ed_big_for(seg_target, 1'b0);
+                    seg_limit_r <= seg_limit_for(issue_target, 1'b0);
+                    {seg_ed_r, seg_big_r} <= ed_big_for(issue_target, 1'b0);
                 end else begin
-                    seg_limit_r <= seg_limit_for(seg_target, descsw_mode);
-                    {seg_ed_r, seg_big_r} <= ed_big_for(seg_target, descsw_mode);
+                    seg_limit_r <= seg_limit_for(issue_target, descsw_mode);
+                    {seg_ed_r, seg_big_r} <= ed_big_for(issue_target, descsw_mode);
+                end
+            end
+
+            SEG_CMD_SPCR: begin
+                stack_push_mode <= 1'b1;
+            end
+
+            SEG_CMD_DESCSW: begin
+                stack_push_mode <= 1'b1;
+                seg_sel <= SEG_SS;
+                seg_is_io <= 1'b0;
+                descsw_mode <= 1'b1;
+                seg_limit_r <= seg_limit_for(SEG_CS, 1'b0);
+                {seg_ed_r, seg_big_r} <= ed_big_for(SEG_CS, 1'b0);
+            end
+
+            default: ;
+        endcase
+    end else if (exec_cmd_valid) begin
+        seg_base_r <= seg_base_pend_exec;
+        addr_size  <= addr_size_pend_exec;
+        is_dtable  <= is_dtable_pend_exec;
+        // STSSAF/CTSSAF arrive as aluop sidebands so the same uop's busop
+        // exec_seg_cmd still executes (608: CTSSAF+SDEL dropped the new-stack
+        // limit, leaving a stale CS limit for the gate frame pushes).
+        // Applied before the case so a same-cycle command wins conflicts.
+        if (stssaf_pulse) begin
+            stack_push_mode <= 1'b0;
+            descsw_mode <= 1'b0;
+            tss_access_flag <= 1'b1;
+            if (seg_sel == SEG_SS) begin
+                seg_limit_r <= seg_limit_for(SEG_SS, 1'b0);
+                {seg_ed_r, seg_big_r} <= ed_big_for(SEG_SS, 1'b0);
+            end
+        end
+        if (ctssaf_pulse)
+            tss_access_flag <= 1'b0;
+        case (exec_seg_cmd)
+            SEG_CMD_INIT_SEG: begin
+                seg_sel <= exec_seg_target;
+                seg_is_io <= (exec_seg_target == SEG_IO);
+                seg_limit_r <= seg_limit_for(exec_seg_target, 1'b0);
+                {seg_ed_r, seg_big_r} <= ed_big_for(exec_seg_target, 1'b0);
+                i_addr32_r <= init_addr32;
+                i_stack_op_r <= init_stack_op;
+                stack_push_mode <= 1'b0;
+                descsw_mode <= 1'b0;
+            end
+
+            SEG_CMD_UPDATE_SEG: begin
+                seg_sel <= exec_seg_target;
+                seg_is_io <= (exec_seg_target == SEG_IO);
+                if (clear_descsw) begin
+                    descsw_mode <= 1'b0;
+                    seg_limit_r <= seg_limit_for(exec_seg_target, 1'b0);
+                    {seg_ed_r, seg_big_r} <= ed_big_for(exec_seg_target, 1'b0);
+                end else begin
+                    seg_limit_r <= seg_limit_for(exec_seg_target, descsw_mode);
+                    {seg_ed_r, seg_big_r} <= ed_big_for(exec_seg_target, descsw_mode);
                 end
             end
 
@@ -759,6 +916,104 @@ always_ff @(posedge clk) begin
         endcase
     end
 end
+
+// synthesis translate_off
+// The former update, verbatim, on shadow registers: it reads the real state,
+// so equal next values every cycle mean equal registers.
+reg [3:0]  ref_seg_sel;
+reg        ref_seg_is_io, ref_is_dtable, ref_addr_size, ref_seg_ed_r, ref_seg_big_r;
+reg [31:0] ref_seg_base_r, ref_seg_limit_r;
+reg        ref_stack_push_mode, ref_descsw_mode, ref_tss_access_flag, ref_i_addr32_r, ref_i_stack_op_r;
+always_ff @(posedge clk) begin
+    if (!reset_n) begin
+        ref_seg_sel <= SEG_DS;
+        ref_seg_is_io <= 1'b0;
+        ref_is_dtable <= 1'b0;
+        ref_addr_size <= 1'b0;
+        ref_seg_base_r <= 32'h0;  // DS_base at reset
+        ref_seg_limit_r <= 32'hFFFF;
+        {ref_seg_ed_r, ref_seg_big_r} <= 2'b00;
+        ref_stack_push_mode <= 1'b0;
+        ref_descsw_mode <= 1'b0;
+        ref_tss_access_flag <= 1'b0;
+        ref_i_addr32_r <= 1'b0;
+        ref_i_stack_op_r <= 1'b0;
+    end else if (seg_cmd_valid) begin
+        ref_seg_base_r <= seg_base_pending_c;
+        ref_addr_size <= addr_size_pending_c;
+        ref_is_dtable <= is_dtable_pending_c;
+        // STSSAF/CTSSAF arrive as aluop sidebands so the same uop's busop
+        // seg_cmd still executes (608: CTSSAF+SDEL dropped the new-stack
+        // limit, leaving a stale CS limit for the gate frame pushes).
+        // Applied before the case so a same-cycle command wins conflicts.
+        if (stssaf_pulse) begin
+            ref_stack_push_mode <= 1'b0;
+            ref_descsw_mode <= 1'b0;
+            ref_tss_access_flag <= 1'b1;
+            if (seg_sel == SEG_SS) begin
+                ref_seg_limit_r <= seg_limit_for(SEG_SS, 1'b0);
+                {ref_seg_ed_r, ref_seg_big_r} <= ed_big_for(SEG_SS, 1'b0);
+            end
+        end
+        if (ctssaf_pulse)
+            ref_tss_access_flag <= 1'b0;
+        case (seg_cmd)
+            SEG_CMD_INIT_SEG: begin
+                ref_seg_sel <= seg_target;
+                ref_seg_is_io <= (seg_target == SEG_IO);
+                ref_seg_limit_r <= seg_limit_for(seg_target, 1'b0);
+                {ref_seg_ed_r, ref_seg_big_r} <= ed_big_for(seg_target, 1'b0);
+                ref_i_addr32_r <= init_addr32;
+                ref_i_stack_op_r <= init_stack_op;
+                ref_stack_push_mode <= 1'b0;
+                ref_descsw_mode <= 1'b0;
+            end
+
+            SEG_CMD_UPDATE_SEG: begin
+                ref_seg_sel <= seg_target;
+                ref_seg_is_io <= (seg_target == SEG_IO);
+                if (clear_descsw) begin
+                    ref_descsw_mode <= 1'b0;
+                    ref_seg_limit_r <= seg_limit_for(seg_target, 1'b0);
+                    {ref_seg_ed_r, ref_seg_big_r} <= ed_big_for(seg_target, 1'b0);
+                end else begin
+                    ref_seg_limit_r <= seg_limit_for(seg_target, descsw_mode);
+                    {ref_seg_ed_r, ref_seg_big_r} <= ed_big_for(seg_target, descsw_mode);
+                end
+            end
+
+            SEG_CMD_SPCR: begin
+                ref_stack_push_mode <= 1'b1;
+            end
+
+            SEG_CMD_DESCSW: begin
+                ref_stack_push_mode <= 1'b1;
+                ref_seg_sel <= SEG_SS;
+                ref_seg_is_io <= 1'b0;
+                ref_descsw_mode <= 1'b1;
+                ref_seg_limit_r <= seg_limit_for(SEG_CS, 1'b0);
+                {ref_seg_ed_r, ref_seg_big_r} <= ed_big_for(SEG_CS, 1'b0);
+            end
+
+            default: ;
+        endcase
+    end
+end
+always @(posedge clk)
+    if (reset_n &&
+        ({seg_sel, seg_is_io, is_dtable, addr_size, seg_base_r, seg_limit_r, seg_ed_r, seg_big_r,
+          stack_push_mode, descsw_mode, tss_access_flag, i_addr32_r, i_stack_op_r} !==
+         {ref_seg_sel, ref_seg_is_io, ref_is_dtable, ref_addr_size, ref_seg_base_r, ref_seg_limit_r,
+          ref_seg_ed_r, ref_seg_big_r, ref_stack_push_mode, ref_descsw_mode, ref_tss_access_flag,
+          ref_i_addr32_r, ref_i_stack_op_r}))
+        $fatal(1, "segmentation_unit: the split register update disagrees with the former one (sel %0d/%0d limit %h/%h base %h/%h)",
+               seg_sel, ref_seg_sel, seg_limit_r, ref_seg_limit_r, seg_base_r, ref_seg_base_r);
+always @(posedge clk)
+    if (reset_n && ((seg_cmd_valid !== (issue_cmd || exec_cmd_valid)) ||
+                    (issue_cmd && ((seg_cmd !== SEG_CMD_INIT_SEG) || (seg_target !== issue_target))) ||
+                    (!issue_cmd && ((seg_cmd !== exec_seg_cmd) || (seg_target !== exec_seg_target)))))
+        $fatal(1, "segmentation_unit: seg_cmd/seg_target/seg_cmd_valid are not the issue/exec arms");
+// synthesis translate_on
 
 address_unit address_unit_inst (
     .clk(clk),
