@@ -80,12 +80,15 @@ module cache_unit
     input  logic dcache_req_valid,
     input  logic [31:0] dcache_req_phys_addr_raw,
     // The request address and I/O verdict on both mem_req arms (CLASS_SPLIT):
-    // dcache_req_phys_addr_raw = sel ? _m1 : _m0, likewise dcache_req_is_io.
+    // dcache_req_phys_addr_raw = pre_sel ? pre_phys : (sel ? _m1 : _m0), likewise
+    // dcache_req_is_io (0 on the pretranslated arm).
     input  logic [31:0] dcache_req_phys_addr_m1,
     input  logic [31:0] dcache_req_phys_addr_m0,
     input  logic dcache_req_is_io_m1,
     input  logic dcache_req_is_io_m0,
     input  logic dcache_req_split_sel,
+    input  logic dcache_req_pre_sel,
+    input  logic [31:0] dcache_req_pre_phys,
     input  logic [11:0] dcache_req_preread_offset,
     input  logic dcache_req_preread_priority,
     input  logic dcache_req_write,
@@ -279,15 +282,27 @@ if (Z486_TEMPLATE_WINDOWS) begin : g_memmap_windows
             ALIAS0_BASE, ALIAS0_TOP, ALIAS1_BASE, ALIAS1_TOP, ALIAS2_BASE, ALIAS2_TOP,
             WIN0_ENABLE && win0_unmapped, WIN0_CLASS, WIN0_BASE, WIN0_TOP,
             NO_ALLOC_ENABLE, NO_ALLOC_CLASS, no_alloc_bound_eff);
-        assign dcache_req_class = dcache_req_split_sel ? class_m1 : class_m0;
+        wire [31:0] pre_post = dcache_req_pre_phys & (a20_enable ? A20_MASK_ON : A20_MASK_OFF);
+        wire [1:0] class_pre = z486_classify_phys(
+            dcache_req_pre_phys, pre_post, VGA_PRE_WRAP ? dcache_req_pre_phys : pre_post,
+            VGA_ENABLE, VGA_CLASS, VGA_BASE, VGA_TOP,
+            APERTURE_ENABLE, APERTURE_CLASS, APERTURE_BASE, APERTURE_TOP,
+            ALIAS_ENABLE, ALIAS_CLASS,
+            ALIAS0_BASE, ALIAS0_TOP, ALIAS1_BASE, ALIAS1_TOP, ALIAS2_BASE, ALIAS2_TOP,
+            WIN0_ENABLE && win0_unmapped, WIN0_CLASS, WIN0_BASE, WIN0_TOP,
+            NO_ALLOC_ENABLE, NO_ALLOC_CLASS, no_alloc_bound_eff);
+        assign dcache_req_class = dcache_req_pre_sel   ? class_pre :
+                                  dcache_req_split_sel ? class_m1 : class_m0;
         // synthesis translate_off
         // The split's premise (the arms recombine to the request) and its
         // result (the class it replaced), on every cycle of every run.
         always @(posedge clk)
             if (reset_n &&
-                ((dcache_req_phys_addr_raw !== (dcache_req_split_sel ? dcache_req_phys_addr_m1
+                ((dcache_req_phys_addr_raw !== (dcache_req_pre_sel ? dcache_req_pre_phys :
+                                                dcache_req_split_sel ? dcache_req_phys_addr_m1
                                                                      : dcache_req_phys_addr_m0)) ||
-                 (dcache_req_is_io !== (dcache_req_split_sel ? dcache_req_is_io_m1
+                 (dcache_req_is_io !== (dcache_req_pre_sel ? 1'b0 :
+                                        dcache_req_split_sel ? dcache_req_is_io_m1
                                                              : dcache_req_is_io_m0)) ||
                  (dcache_req_class !== dcache_req_class_whole)))
                 $fatal(1, "cache_unit: CLASS_SPLIT arms %h/%h (io %b/%b, sel %b) disagree with the request %h (io %b): class %0d vs %0d",

@@ -6,8 +6,10 @@
 //      dcache_req_is_io formed from mem_req through idle_data_req ->
 //      early_wr_idx_drive/early_wr_present/early_present, A20-masked by
 //      (a20_enable || is_io) and classified once (dcache_req_class).
-// new: the same expressions with mem_req fixed at 1 and at 0, each arm masked
-//      by its own I/O verdict and classified, mem_req selecting the class.
+// new: the same expressions with pretrans_present low and mem_req fixed at 1
+//      and at 0, plus the pretranslated arm (I/O 0), each arm masked by its own
+//      I/O verdict and classified, pretrans_present then mem_req selecting
+//      the class.
 // Every request input is free, and so are the window enables and classes, the
 // runtime no-allocate bound and VGA_PRE_WRAP; the window bounds and A20 masks
 // are the PC-98 preset's (z486.sv defaults, z486_pc98_preset.svh). Also
@@ -75,23 +77,18 @@ module req_class_split #(parameter MUTANT = 0)
 
   // ---- new (the arms, restated from paging_unit.sv) ----
   wire ewid_m1 = s_idle && !mem_servicing && mem_write && (MUTANT ? 1'b1 : !mem_is_io);
-  wire ep_m1   = (ewid_m1 && !idle_mem_crossing && !mem_check_only && live_store_posts) ||
-                 pretrans_present;
-  wire [31:0] m1 = {pretrans_present ? pretrans_phys[31:12] :
-                    ep_m1            ? early_phys[31:12] :
-                    req_mem_present  ? req_mem_phys[31:12] : phys_r[31:12],
-                    pretrans_present ? pretrans_phys[11:0] :
-                    ewid_m1          ? linear_addr[11:0] :
-                    req_mem_present  ? req_linear[11:0] : phys_r[11:0]};
-  wire [31:0] m0 = {pretrans_present ? pretrans_phys[31:12] :
-                    req_mem_present  ? req_mem_phys[31:12] : phys_r[31:12],
-                    pretrans_present ? pretrans_phys[11:0] :
-                    req_mem_present  ? req_linear[11:0] : phys_r[11:0]};
-  wire io_m1 = (ep_m1 || req_mem_present) ? 1'b0 : is_io_r;
-  wire io_m0 = (pretrans_present || req_mem_present) ? 1'b0 : is_io_r;
-  wire [1:0] cls_new = mem_req ? cls(m1, io_m1) : cls(m0, io_m0);
+  wire ewp_m1  = ewid_m1 && !idle_mem_crossing && !mem_check_only && live_store_posts;
+  wire [31:0] m1 = {ewp_m1          ? early_phys[31:12] :
+                    req_mem_present ? req_mem_phys[31:12] : phys_r[31:12],
+                    ewid_m1         ? linear_addr[11:0] :
+                    req_mem_present ? req_linear[11:0] : phys_r[11:0]};
+  wire [31:0] m0 = req_mem_present ? {req_mem_phys[31:12], req_linear[11:0]} : phys_r;
+  wire io_m1 = (ewp_m1 || req_mem_present) ? 1'b0 : is_io_r;
+  wire io_m0 = req_mem_present ? 1'b0 : is_io_r;
+  wire [1:0] cls_new = pretrans_present ? cls(pretrans_phys, 1'b0) :
+                       mem_req ? cls(m1, io_m1) : cls(m0, io_m0);
 
   assign mismatch = (cls_new != cls_old) ||
-                    ((mem_req ? m1 : m0) != raw) ||
-                    ((mem_req ? io_m1 : io_m0) != is_io);
+                    ((pretrans_present ? pretrans_phys : mem_req ? m1 : m0) != raw) ||
+                    ((pretrans_present ? 1'b0 : mem_req ? io_m1 : io_m0) != is_io);
 endmodule

@@ -481,6 +481,8 @@ wire [31:0] dcache_req_phys_addr_m0;
 wire        dcache_req_is_io_m1;
 wire        dcache_req_is_io_m0;
 wire        dcache_req_split_sel;
+wire        dcache_req_pre_sel;          // the pretranslated arm
+wire [31:0] dcache_req_pre_phys;
 wire [11:0] dcache_req_preread_offset;
 wire        dcache_req_preread_priority;
 wire        dcache_req_write;
@@ -993,6 +995,8 @@ memory #(
     .dcache_req_is_io_m1(dcache_req_is_io_m1),
     .dcache_req_is_io_m0(dcache_req_is_io_m0),
     .dcache_req_split_sel(dcache_req_split_sel),
+    .dcache_req_pre_sel(dcache_req_pre_sel),
+    .dcache_req_pre_phys(dcache_req_pre_phys),
     .dcache_req_preread_offset(dcache_req_preread_offset),
     .dcache_req_preread_priority(dcache_req_preread_priority),
     .dcache_req_write(dcache_req_write),
@@ -2768,6 +2772,8 @@ paging_unit #(.VGA_BASE(VGA_BASE), .VGA_TOP(VGA_TOP)) paging_inst (
     .dcache_req_is_io_m1(dcache_req_is_io_m1),
     .dcache_req_is_io_m0(dcache_req_is_io_m0),
     .dcache_req_split_sel(dcache_req_split_sel),
+    .dcache_req_pre_sel(dcache_req_pre_sel),
+    .dcache_req_pre_phys(dcache_req_pre_phys),
     .dcache_req_preread_offset(dcache_req_preread_offset),
     .dcache_req_preread_priority(dcache_req_preread_priority),
     .dcache_req_write   (dcache_req_write),
