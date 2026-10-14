@@ -264,7 +264,25 @@ wire [31:0] pv5 = producer_value(5);
 wire [31:0] pv6 = producer_value(6);
 wire [31:0] pv7 = producer_value(7);
 // Producer 3 as the views see it (see fwd_wb): equal to pv3 wherever hitv3.
-wire [31:0] pv3f = align_of_size(size_wb, dst_wb[2], fwd_wb);
+// A view takes byte b of pv3f only where hitv3 (b is one of the write-back's
+// be_of_size lanes), and there align_of_size(size_wb, dst_wb[2], fwd_wb) is
+// fwd_wb's own byte b except in lane 1 of an AH write (the low byte moved up).
+// So only lane 1 has a select, a one-LUT decode of the write-back's size and
+// AH bit, and the size compare is not in front of the other lanes.
+// tests/equiv/wb_view_align.v proves the lanes equal wherever a view can
+// select them.
+wire [31:0] pv3f = {fwd_wb[31:16],
+                    ((size_wb == 2'd0) && dst_wb[2]) ? fwd_wb[7:0] : fwd_wb[15:8],
+                    fwd_wb[7:0]};
+// synthesis translate_off
+wire [31:0] pv3f_aligned = align_of_size(size_wb, dst_wb[2], fwd_wb);
+wire [3:0]  pv3f_lanes   = be_of_size(size_wb, dst_wb[2]);
+always_comb
+    for (int bb = 0; bb < 4; bb++)
+        if (v_wb && pv3f_lanes[bb] && (pv3f[bb*8 +: 8] !== pv3f_aligned[bb*8 +: 8]))
+            $fatal(1, "GPR MERGE PV3F: lane %0d %02x, aligned %02x", bb,
+                   pv3f[bb*8 +: 8], pv3f_aligned[bb*8 +: 8]);
+// synthesis translate_on
 
 // The capture-view merge for one selected register: the same terms in the same
 // order as byte_cap below, with the register comparison folded into each hit.
