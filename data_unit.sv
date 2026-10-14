@@ -77,6 +77,7 @@ module data_unit
     input  logic        load_pipe_flush,           // In-flight direct loads are dropped
     input  logic [2:0]  load_wb_dst,
     input  logic [1:0]  load_wb_size,
+    input  logic [7:0]  load_wb_wmask,             // load_wb_valid ? 8'h01 << load_wb_widx : 0, registered
     input  logic [31:0] load_wb_data,
     input  logic        load_wb_is_alu,          // Registered memory operand feeds shared ALU
     input  logic [4:0]  load_wb_alu_op,
@@ -521,8 +522,15 @@ function automatic logic [31:0] read_gpr_load_forwarded_late(
 endfunction
 
 // Every late GPR write landing on this edge (any direct-load WB included).
-assign pend_write_mask = pend_dly_mask | pend_shift_mask |
-                         (load_wb_valid ? (8'h01 << load_wb_widx) : 8'h00);
+// The write-back's term is data_access's registered one-hot (loaded on the
+// edges load_wb_valid/dst/size are), so the size compare and the index decode
+// are not in front of the D2 split-EA wait and the issue decision.
+assign pend_write_mask = pend_dly_mask | pend_shift_mask | load_wb_wmask;
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && (load_wb_wmask !== (load_wb_valid ? (8'h01 << load_wb_widx) : 8'h00)))
+        $fatal(1, "data_unit: load_wb_wmask %b is not the write-back's one-hot", load_wb_wmask);
+// synthesis translate_on
 
 // A shift operand captured one cycle ahead (SHIFT2 SRCREG): a deferred shift
 // or delay-slot write landing on the capture edge must be seen, as for a

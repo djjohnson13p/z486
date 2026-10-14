@@ -176,6 +176,10 @@ module tb_gpr_hazard;
         .load_wb_valid(load_wb_valid),
         .load_wb_dst(load_wb_dst),
         .load_wb_size(load_wb_size),
+        // data_access registers this one-hot with the write-back (vipt_load_wb_wmask_r).
+        .load_wb_wmask(load_wb_valid ? (8'h01 << ((load_wb_size == 2'd0)
+                                                  ? {1'b0, load_wb_dst[1:0]}
+                                                  : load_wb_dst)) : 8'h00),
         .load_wb_data(load_wb_data),
         .load_wb_is_alu(load_wb_is_alu),
         .load_wb_alu_op(load_wb_alu_op),

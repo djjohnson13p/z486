@@ -105,6 +105,9 @@ module data_access
     output logic [1:0]              vipt_load_wb_size_r,
     output logic [31:0]             vipt_load_wb_target_r,
     output logic                    vipt_load_wb_valid_r,
+    // The write-back's byte-normalized GPR one-hot, gated by its valid:
+    // = vipt_load_wb_valid_r ? 8'h01 << norm(dst, size) : 0, every cycle.
+    output logic [7:0]              vipt_load_wb_wmask_r,
     // D2 instruction and issue
     input  logic                    d2_vipt_ea_hazard,
     // An older deferred memory token owns this load's destination and its
@@ -289,6 +292,11 @@ assign d2_plain_load_overlap_ready = vipt_load_ex_r.valid &&
                                 !vipt_load_replay_r.valid &&
                                 !vipt_load_slow_busy && !single_step;
 
+// The GPR one-hot a write-back of (dst, size) writes (data_unit load_wb_widx).
+function automatic [7:0] wb_wmask_of(input [2:0] dst, input [1:0] size);
+    wb_wmask_of = 8'h01 << ((size == 2'd0) ? {1'b0, dst[1:0]} : dst);
+endfunction
+
 // synthesis translate_off
 wire [2:0] vipt_load_wb_norm_dst = (vipt_load_wb_size_r == 2'd0)
                                   ? {1'b0, vipt_load_wb_dst_r[1:0]}
@@ -455,6 +463,7 @@ always_ff @(posedge clk) begin
         vipt_slow_phys_ok_r <= 1'b0;
         vipt_slow_phys_r <= 32'd0;
         vipt_load_wb_valid_r <= 1'b0;
+        vipt_load_wb_wmask_r <= 8'd0;
         vipt_load_ex_probed_r <= 1'b0;
         vipt_load_wb_data_r <= 32'd0;
         vipt_load_wb_ret_r <= 1'b0;
@@ -467,6 +476,7 @@ always_ff @(posedge clk) begin
         vipt_load_overlap_r <= 1'b0;
     end else begin
         vipt_load_wb_valid_r <= 1'b0;
+        vipt_load_wb_wmask_r <= 8'd0;
 
         if (vipt_load_wb_valid_r)
             vipt_load_overlap_r <= 1'b0;
@@ -519,6 +529,8 @@ always_ff @(posedge clk) begin
                 end
             end else if (vipt_load_ex_hit && !any_fault) begin
                 vipt_load_wb_valid_r <= 1'b1;
+                vipt_load_wb_wmask_r <= wb_wmask_of(vipt_load_ex_r.dst,
+                                                    vipt_load_ex_r.write_size);
                 // A RET writes its new ESP through the load port and keeps
                 // the loaded target for the redirect.
                 vipt_load_wb_data_r <= vipt_load_ex_r.is_ret ? vipt_load_ex_r.ret_esp
@@ -589,6 +601,8 @@ always_ff @(posedge clk) begin
         if (vipt_load_slow_wait_r && !mem_servicing) begin
             vipt_load_slow_wait_r <= 1'b0;
             vipt_load_wb_valid_r <= 1'b1;
+            vipt_load_wb_wmask_r <= wb_wmask_of(vipt_load_slow_r.dst,
+                                                vipt_load_slow_r.write_size);
             vipt_load_wb_data_r <= vipt_load_slow_r.is_ret ? vipt_load_slow_r.ret_esp
                                  : format_hardwired_load(
                 OPR_R, 2'd0, vipt_load_slow_r.mem_size,
@@ -608,6 +622,7 @@ always_ff @(posedge clk) begin
             vipt_load_slow_req_r <= 1'b0;
             vipt_load_slow_wait_r <= 1'b0;
             vipt_load_wb_valid_r <= 1'b0;
+            vipt_load_wb_wmask_r <= 8'd0;
             vipt_load_ex_probed_r <= 1'b0;
             vipt_load_overlap_r <= 1'b0;
         end
@@ -626,6 +641,10 @@ always_ff @(posedge clk) begin
     if (reset_n && vipt_load_wb_valid_r &&
         (vipt_load_wb_dst_onehot_r !== (8'h01 << vipt_load_wb_norm_dst)))
         $fatal(1, "VIPT WB destination mask mismatch");
+    if (reset_n && (vipt_load_wb_wmask_r !==
+                    (vipt_load_wb_valid_r ? wb_wmask_of(vipt_load_wb_dst_r, vipt_load_wb_size_r)
+                                          : 8'h00)))
+        $fatal(1, "VIPT WB write mask %b is not the valid write-back's", vipt_load_wb_wmask_r);
 end
 // synthesis translate_on
 
