@@ -195,6 +195,7 @@ logic [1:0] recipe_memory_mode;      // Byte-low/high, word, or dword merge
 // forwarding stop. Suppressing such a write is safe by construction: a younger
 // write to the same bytes already made the older value architecturally dead.
 logic       recipe_memory_killed;
+logic [31:0] recipe_memory_hit_r;       // producer 1's merge hits, see mem_hit_of
 logic       recipe_shift_killed;
 assign dbg_recipe_mem_killed   = recipe_memory_killed;
 assign dbg_recipe_shift_killed = recipe_shift_killed;
@@ -392,6 +393,7 @@ gpr_write_merge gpr_merge (
     .data_shift(recipe_shift_data),
 
     .v_mem(pr_mem_valid),
+    .hit_mem(recipe_memory_hit_r),
     .dst_mem(recipe_memory_write.dst),
     .mode_mem(recipe_memory_mode),
     .data_mem(opr_r),
@@ -993,6 +995,45 @@ endtask
 
 // A younger producer writing the same bytes as a still-valid deferred token
 // retires the token's commit (and its forwarding) for the rest of the stall.
+// The memory token's (producer 1's) merge hit per GPR byte [r*4 + b]:
+// (recipe_memory_write.valid && !recipe_memory_killed) ? its lanes at register
+// dst_norm(1) : 0, registered on the edges those registers change so the
+// valid/killed AND and the register/lane decode are not in front of the
+// views (C4x: recipe_memory_killed -> hit1 -> ex_value). Loaded with the
+// token at pipeline_advance, cleared by the kill events below, held
+// otherwise; tests/equiv/mem_hit_reg.v proves it equal every cycle.
+function automatic [31:0] mem_hit_of(input [2:0] dst, input [1:0] mode);
+    logic [2:0] r;
+    logic [3:0] be;
+    begin
+        r  = ((mode == EA_FWD_BLO) || (mode == EA_FWD_BHI)) ? {1'b0, dst[1:0]} : dst;
+        be = (mode == EA_FWD_BLO) ? 4'h1 : (mode == EA_FWD_BHI) ? 4'h2 :
+             (mode == EA_FWD_W)   ? 4'h3 : 4'hF;
+        mem_hit_of = {28'h0, be} << {r, 2'b00};
+    end
+endfunction
+wire [1:0] recipe_memory_mode_next = (op_size == 2'd0)
+                                   ? (dst_reg_sel_r[2] ? EA_FWD_BHI : EA_FWD_BLO)
+                                   : (op_size == 2'd1 ? EA_FWD_W : EA_FWD_D);
+wire       recipe_memory_kill = (load_wb_valid && !recipe_commit_cancel &&
+                                 recipe_memory_dst_onehot[load_wb_widx]) || opr_fast_commit;
+always_ff @(posedge clk) begin
+    if (!reset_n)
+        recipe_memory_hit_r <= 32'h0;
+    else if (pipeline_advance)
+        recipe_memory_hit_r <= (recipe_rni && exec && instr_start && !recipe_commit_cancel &&
+                                (recipe_state.commit_sel == RECIPE_COMMIT_MEM))
+                             ? mem_hit_of(dst_reg_sel_r, recipe_memory_mode_next) : 32'h0;
+    else if (recipe_memory_kill)
+        recipe_memory_hit_r <= 32'h0;
+end
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && (recipe_memory_hit_r !==
+                    (pr_mem_valid ? mem_hit_of(recipe_memory_write.dst, recipe_memory_mode) : 32'h0)))
+        $fatal(1, "data_unit: memory-token hits %h disagree with the token", recipe_memory_hit_r);
+// synthesis translate_on
+
 // opr_fast_commit needs no destination: once OPR_R is replaced, the token's
 // only data source is gone, so any later recommit would write foreign data.
 always_ff @(posedge clk) begin
@@ -1000,8 +1041,7 @@ always_ff @(posedge clk) begin
         recipe_memory_killed <= 1'b0;
         recipe_shift_killed <= 1'b0;
     end else if (!pipeline_advance) begin
-        if ((load_wb_valid && !recipe_commit_cancel &&
-             recipe_memory_dst_onehot[load_wb_widx]) || opr_fast_commit)
+        if (recipe_memory_kill)
             recipe_memory_killed <= 1'b1;
         if (load_wb_valid && !recipe_commit_cancel &&
             (recipe_shift_widx == load_wb_widx))
@@ -1091,9 +1131,7 @@ always_ff @(posedge clk) begin
             recipe_memory_dst_onehot <= 8'b1 << ((op_size == 2'd0)
                                                ? {1'b0, dst_reg_sel_r[1:0]}
                                                : dst_reg_sel_r);
-            recipe_memory_mode <= (op_size == 2'd0)
-                                ? (dst_reg_sel_r[2] ? EA_FWD_BHI : EA_FWD_BLO)
-                                : (op_size == 2'd1 ? EA_FWD_W : EA_FWD_D);
+            recipe_memory_mode <= recipe_memory_mode_next;
         end
 
         recipe_shift_write.valid <= recipe_rni && exec && !recipe_commit_cancel &&

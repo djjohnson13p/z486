@@ -71,6 +71,9 @@ module gpr_write_merge
     input  logic [2:0]   dst_mem,
     input  logic [1:0]   mode_mem,      // EA_FWD_BLO / _BHI / _W / _D
     input  logic [31:0]  data_mem,      // OPR_R
+    // Producer 1's hit per GPR byte [r*4 + b], registered by the caller:
+    // v_mem && byte b of register dst_norm(1) in be_of_mode(mode_mem).
+    input  logic [31:0]  hit_mem,
 
     // Producer 2: interrupt-entry ROM writeback slot.
     input  logic         v_rom,
@@ -305,7 +308,13 @@ for (r = 0; r < 8; r++) begin : g_reg
         // `forwarding` selects the view enable of the write-back: an M3 ALU
         // result is committed but never forwarded.
         wire hit0 = v_shift && en0[b];
-        wire hit1 = v_mem   && en1[b];
+        wire hit1 = hit_mem[r*4 + b];
+        // synthesis translate_off
+        always_comb
+            if (hit1 !== (v_mem && en1[b]))
+                $fatal(1, "GPR MERGE HIT1: reg %0d byte %0d registered %b, decoded %b",
+                       r, b, hit1, v_mem && en1[b]);
+        // synthesis translate_on
         wire hit2 = v_rom   && en2[b];
         wire hit3 = v_wb    && en3[b];
         wire hit4 = v_dly   && en4[b];

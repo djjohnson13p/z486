@@ -39,6 +39,17 @@ module tb_gpr_write_merge;
 
     // The caller registers producer 3's view hits with the write-back
     // (data_access vipt_load_wb_view_hit_r); the bench forms them from its stimulus.
+    // Producer 1's hits, which data_unit registers with the memory token
+    // (recipe_memory_hit_r); EA_FWD_BLO/BHI/W/D are 0/1/2/3.
+    function automatic [31:0] mem_hit_of(input v, input [2:0] dst, input [1:0] mode);
+        logic [2:0] r;
+        logic [3:0] be;
+        begin
+            r  = (mode <= 2'd1) ? {1'b0, dst[1:0]} : dst;
+            be = (mode == 2'd0) ? 4'h1 : (mode == 2'd1) ? 4'h2 : (mode == 2'd2) ? 4'h3 : 4'hF;
+            mem_hit_of = v ? ({28'h0, be} << {r, 2'b00}) : 32'h0;
+        end
+    endfunction
     function automatic [31:0] wb_view_hit_of(input v, input [2:0] dst, input [1:0] size, input is_alu);
         logic [2:0] r;
         logic [3:0] be;
@@ -57,6 +68,7 @@ module tb_gpr_write_merge;
         .v_wb(v_wb), .dst_wb(dst_wb), .size_wb(size_wb), .wb_is_alu(wb_is_alu), .data_wb(data_wb),
         .fwd_wb(fwd_wb),
         .hitv3_wb(wb_view_hit_of(v_wb, dst_wb, size_wb, wb_is_alu)),
+        .hit_mem(mem_hit_of(v_mem, dst_mem, mode_mem)),
         .v_dly(v_dly), .dst_dly(dst_dly), .mode_dly(mode_dly), .data_dly(data_dly),
         .v_stos(v_stos), .size_stos(size_stos), .data_stos(data_stos),
         .v_sigsrc(v_sigsrc), .dst_sigsrc(dst_sigsrc), .size_sigsrc(size_sigsrc),
