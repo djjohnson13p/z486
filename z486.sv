@@ -472,6 +472,11 @@ wire        decoder_fetch_blocked;
 // Physical cache channels connect paging, memory arbitration, and x87.
 wire        dcache_req_valid;
 wire [31:0] dcache_req_phys_addr_raw;
+wire [31:0] dcache_req_phys_addr_m1;    // the request on mem_req's two arms
+wire [31:0] dcache_req_phys_addr_m0;
+wire        dcache_req_is_io_m1;
+wire        dcache_req_is_io_m0;
+wire        dcache_req_split_sel;
 wire [11:0] dcache_req_preread_offset;
 wire        dcache_req_preread_priority;
 wire        dcache_req_write;
@@ -955,7 +960,8 @@ memory #(
     .NO_ALLOC_ENABLE(NO_ALLOC_ENABLE),
     .NO_ALLOC_CLASS(NO_ALLOC_CLASS),
     .NO_ALLOC_BOUND(NO_ALLOC_BOUND),
-    .RAM_BOUND_ENABLE(RAM_BOUND_ENABLE)
+    .RAM_BOUND_ENABLE(RAM_BOUND_ENABLE),
+    .CLASS_SPLIT(1)
 ) memory_inst (
     .clk(clk),
     .reset_n(reset_n),
@@ -969,6 +975,11 @@ memory #(
 
     .dcache_req_valid(dcache_req_valid),
     .dcache_req_phys_addr_raw(dcache_req_phys_addr_raw),
+    .dcache_req_phys_addr_m1(dcache_req_phys_addr_m1),
+    .dcache_req_phys_addr_m0(dcache_req_phys_addr_m0),
+    .dcache_req_is_io_m1(dcache_req_is_io_m1),
+    .dcache_req_is_io_m0(dcache_req_is_io_m0),
+    .dcache_req_split_sel(dcache_req_split_sel),
     .dcache_req_preread_offset(dcache_req_preread_offset),
     .dcache_req_preread_priority(dcache_req_preread_priority),
     .dcache_req_write(dcache_req_write),
@@ -2730,6 +2741,11 @@ paging_unit #(.VGA_BASE(VGA_BASE), .VGA_TOP(VGA_TOP)) paging_inst (
     // Demand-side physical request interface
     .dcache_req_valid   (dcache_req_valid),
     .dcache_req_phys_addr(dcache_req_phys_addr_raw),
+    .dcache_req_phys_addr_m1(dcache_req_phys_addr_m1),
+    .dcache_req_phys_addr_m0(dcache_req_phys_addr_m0),
+    .dcache_req_is_io_m1(dcache_req_is_io_m1),
+    .dcache_req_is_io_m0(dcache_req_is_io_m0),
+    .dcache_req_split_sel(dcache_req_split_sel),
     .dcache_req_preread_offset(dcache_req_preread_offset),
     .dcache_req_preread_priority(dcache_req_preread_priority),
     .dcache_req_write   (dcache_req_write),

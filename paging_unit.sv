@@ -133,6 +133,14 @@ module paging_unit
     output logic        dcache_req_is_vga_mem,// Physical VGA aperture
     output logic        dcache_req_is_pcd,    // Page-level cache disable (PCD) for this access
     output logic        dcache_req_is_locked, // Locked read (LOCK#): bypass the L1
+    // The request's address and I/O verdict as they are when mem_req is high
+    // (_m1) and when it is low (_m0), with mem_req as the select: the cache
+    // unit classifies both arms and selects the class last (CLASS_SPLIT).
+    output logic [31:0] dcache_req_phys_addr_m1,
+    output logic [31:0] dcache_req_phys_addr_m0,
+    output logic        dcache_req_is_io_m1,
+    output logic        dcache_req_is_io_m0,
+    output logic        dcache_req_split_sel,
 
     input               dcache_req_accepted,  // Demand-side request accepted this cycle
     input               dcache_req_complete,  // Demand-side request complete
@@ -594,6 +602,33 @@ wire [11:0] dcache_req_offset = pretrans_present ? pretrans_phys[11:0] :
                                 req_mem_present   ? req_linear[11:0] :
                                                     dcache_req_phys_addr_r[11:0];
 assign dcache_req_phys_addr = {dcache_req_frame, dcache_req_offset};
+
+// The request address split on mem_req (Shannon: f(m) = m ? f(1) : f(0)).
+// mem_req carries the segment-limit/#GP verdict (z486.sv gp_fault_trigger),
+// the latest input of the request; it reaches the address only through
+// idle_data_req -> early_wr_idx_drive/early_wr_present. With both arms formed
+// from the other inputs, the cache unit classifies each one and mem_req picks
+// the finished class, instead of the verdict steering the address mux in
+// front of the memory-map window compares. tests/equiv/req_class_split.v
+// proves the arms against the expressions above for every input.
+wire        early_wr_idx_drive_m1 = s_idle && !mem_servicing && mem_write && !mem_is_io;
+wire        early_present_m1      = (early_wr_idx_drive_m1 && !idle_mem_crossing &&
+                                     !mem_check_only && live_store_posts) ||
+                                    pretrans_present;
+assign dcache_req_phys_addr_m1 = {
+    pretrans_present ? pretrans_phys[31:12] :
+    early_present_m1 ? early_phys[31:12] :
+    req_mem_present  ? req_mem_phys[31:12] : dcache_req_phys_addr_r[31:12],
+    pretrans_present      ? pretrans_phys[11:0] :
+    early_wr_idx_drive_m1 ? linear_addr[11:0] :
+    req_mem_present       ? req_linear[11:0] : dcache_req_phys_addr_r[11:0]};
+// mem_req low: no early write drives (early_present is pretrans_present).
+assign dcache_req_phys_addr_m0 = {
+    pretrans_present ? pretrans_phys[31:12] :
+    req_mem_present  ? req_mem_phys[31:12] : dcache_req_phys_addr_r[31:12],
+    pretrans_present ? pretrans_phys[11:0] :
+    req_mem_present  ? req_linear[11:0] : dcache_req_phys_addr_r[11:0]};
+assign dcache_req_split_sel = mem_req;
 assign dcache_req_preread_offset = dcache_req_offset;
 // Conservatively reserve the preread port for any registered demand request.
 // IO-like requests do not consume the cache, but retaining that distinction
@@ -631,6 +666,8 @@ assign dcache_direct_wdata = dcache_req_valid_r
                                               linear_addr[1:0]);
 assign x87_req_wdata = dcache_io_wdata_r;
 assign dcache_req_is_io = (early_present || req_mem_present) ? 1'b0 : dcache_req_is_io_r;
+assign dcache_req_is_io_m1 = (early_present_m1 || req_mem_present) ? 1'b0 : dcache_req_is_io_r;
+assign dcache_req_is_io_m0 = (pretrans_present || req_mem_present) ? 1'b0 : dcache_req_is_io_r;
 assign dcache_req_is_inta = (early_present || req_mem_present) ? 1'b0 : dcache_req_is_inta_r;
 assign dcache_req_is_x87 = (early_present || req_mem_present) ? 1'b0 : dcache_req_is_x87_r;
 wire        early_is_vga_mem   = pretrans_present ?

@@ -53,7 +53,11 @@ module memory
 
     // Runtime cacheable-RAM top; with RAM_BOUND_ENABLE the effective bound is
     // min(ram_cache_top, NO_ALLOC_BOUND).
-    parameter        RAM_BOUND_ENABLE = 0
+    parameter        RAM_BOUND_ENABLE = 0,
+
+    // Classify the demand request on the paging unit's mem_req arms
+    // (cache_unit CLASS_SPLIT); 0 classifies dcache_req_phys_addr_raw directly.
+    parameter        CLASS_SPLIT = 0
 ) (
     input              clk,
     input              reset_n,
@@ -71,6 +75,12 @@ module memory
     // Paging-unit demand request
     input              dcache_req_valid,
     input      [31:0]  dcache_req_phys_addr_raw,
+    // The request on both mem_req arms (read only with CLASS_SPLIT).
+    input      [31:0]  dcache_req_phys_addr_m1,
+    input      [31:0]  dcache_req_phys_addr_m0,
+    input              dcache_req_is_io_m1,
+    input              dcache_req_is_io_m0,
+    input              dcache_req_split_sel,
     input      [11:0]  dcache_req_preread_offset,
     input              dcache_req_preread_priority,
     input              dcache_req_write,
@@ -238,7 +248,8 @@ cache_unit #(
     .NO_ALLOC_ENABLE(NO_ALLOC_ENABLE),
     .NO_ALLOC_CLASS(NO_ALLOC_CLASS),
     .NO_ALLOC_BOUND(NO_ALLOC_BOUND),
-    .RAM_BOUND_ENABLE(RAM_BOUND_ENABLE)
+    .RAM_BOUND_ENABLE(RAM_BOUND_ENABLE),
+    .CLASS_SPLIT(CLASS_SPLIT)
 ) cache_unit_inst (
     // Clock, reset and board configuration
     .clk(clk),
@@ -252,6 +263,11 @@ cache_unit #(
     // Paging unit: demand data request (physical address, before A20 masking)
     .dcache_req_valid(dcache_req_valid),
     .dcache_req_phys_addr_raw(dcache_req_phys_addr_raw),
+    .dcache_req_phys_addr_m1(dcache_req_phys_addr_m1),
+    .dcache_req_phys_addr_m0(dcache_req_phys_addr_m0),
+    .dcache_req_is_io_m1(dcache_req_is_io_m1),
+    .dcache_req_is_io_m0(dcache_req_is_io_m0),
+    .dcache_req_split_sel(dcache_req_split_sel),
     .dcache_req_preread_offset(dcache_req_preread_offset),
     .dcache_req_preread_priority(dcache_req_preread_priority),
     .dcache_req_write(dcache_req_write),
