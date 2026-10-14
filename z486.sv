@@ -407,6 +407,8 @@ wire [31:0] latched_pf_addr;  // Latched faulting linear address (for LPCR micro
 wire [63:0] k1q;                 // registered raw window at the prefetcher's D1 cursor
 wire [63:0] k1q_early;           // speculative next D1 window for entry ROM
 wire [5:0]  k1q_avail;               // bytes fetched beyond the D1 cursor
+wire [5:0]  k1q_avail_raw;           // k1q_avail = min(raw, lim): buffered bytes,
+wire [5:0]  k1q_avail_lim;           //   and the CS-limit bound
 wire [3:0]  k1p_adv;                 // D1 cursor advance this cycle (a prefix, or
                                     //   the instruction rest at handoff, 0-11)
 wire [3:0]  k1p_preread_adv;         // structural advance without D2 backpressure
@@ -1073,6 +1075,8 @@ prefetch prefetch_inst (
     .k1q(k1q),
     .k1q_early(k1q_early),
     .k1q_avail(k1q_avail),
+    .k1q_avail_raw(k1q_avail_raw),
+    .k1q_avail_lim(k1q_avail_lim),
     .k1p_adv(k1p_adv),
     .k1p_preread_adv(k1p_preread_adv),
     .k2q(k2q),
@@ -1275,6 +1279,8 @@ decoder decoder_inst (
     .k1q     (k1q),
     .k1q_early(k1q_early),
     .k1q_avail   (k1q_avail),
+    .k1q_avail_raw(k1q_avail_raw),
+    .k1q_avail_lim(k1q_avail_lim),
     .k1p_adv     (k1p_adv),
     .k1p_preread_adv(k1p_preread_adv),
     .k2q    (k2q),

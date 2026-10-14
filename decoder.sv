@@ -14,6 +14,8 @@ module decoder
     input        [63:0] k1q,            // registered raw window at the D1 cursor
     input        [63:0] k1q_early,      // speculative next window for entry-ROM preread
     input        [5:0]  k1q_avail,      // bytes fetched beyond the D1 cursor
+    input        [5:0]  k1q_avail_raw,  // its two bounds: k1q_avail =
+    input        [5:0]  k1q_avail_lim,  //   min(k1q_avail_raw, k1q_avail_lim)
     output       [3:0]  k1p_adv,        // D1 cursor advance (0-11 bytes: a prefix,
                                         //   or the whole rest of the instruction
                                         //   at handoff - struct AND literal bytes)
@@ -103,10 +105,25 @@ wire       data32 = code32_r ^ prefix_66;
 wire       addr32 = code32_r ^ prefix_67;
 wire [15:0] entry_rom_sel;
 
+// min(a, b) >= x  <=>  a >= x && b >= x: every D1 availability test compares
+// both bounds of k1q_avail, so prefetch's min (a compare and a 6-bit select)
+// is not in front of the compares on the pf_rptr -> k1q_avail -> entry-ROM
+// address path. tests/equiv/k1_avail_ge.v proves the identity.
+function automatic logic avail_ge(input logic [5:0] raw, input logic [5:0] lim,
+                                  input logic [5:0] need);
+    avail_ge = (raw >= need) && (lim >= need);
+endfunction
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && (k1q_avail !== ((k1q_avail_raw > k1q_avail_lim) ? k1q_avail_lim : k1q_avail_raw)))
+        $fatal(1, "decoder: k1q_avail %0d is not min(%0d, %0d)",
+               k1q_avail, k1q_avail_raw, k1q_avail_lim);
+// synthesis translate_on
+
 wire consume_prefix = !prefix_0f && is_prefix(opcode) &&
-                      (k1q_avail >= 6'd1);
+                      avail_ge(k1q_avail_raw, k1q_avail_lim, 6'd1);
 wire consume_0f     = !prefix_0f && (opcode == 8'h0f) &&
-                      (k1q_avail >= 6'd1);
+                      avail_ge(k1q_avail_raw, k1q_avail_lim, 6'd1);
 
 decoder_work_t struct_work;
 logic [2:0]    struct_len;
@@ -119,7 +136,7 @@ wire [53:0] struct_work_inputs = {
 };
 always_comb build_struct_work(struct_work_inputs, struct_work, struct_len);
 
-wire struct_bytes_ok = k1q_avail >= {3'b000, struct_len};
+wire struct_bytes_ok = avail_ge(k1q_avail_raw, k1q_avail_lim, {3'b000, struct_len});
 
 // skel_free: d2_done's terms are k2q_avail / out_full / phase - all
 // register-derived, never i_issue (L1) - so the same-edge free is legal.
@@ -131,7 +148,7 @@ wire d1_slot_ready = !skel_v || i_issue;
 // three bytes on K1Q (US5293592). An instruction with a SIB byte waits until
 // that byte is in view; the decoded address mode then goes to D2 in the
 // skeleton, where the address is formed.
-wire sib_in_view = k1q_avail >= 6'd3;
+wire sib_in_view = avail_ge(k1q_avail_raw, k1q_avail_lim, 6'd3);
 wire d1_struct_ready = struct_bytes_ok &&
                        (!struct_work.need_sib || sib_in_view);
 wire d1_preread_handoff = !consume_prefix && !consume_0f && d1_struct_ready;
@@ -295,14 +312,14 @@ wire [3:0] handoff_lit_size = {1'b0, handoff_work.lit1_size} +
                               {1'b0, handoff_work.lit2_size};
 wire handoff_one_d2 = (handoff_work.lit2_kind == LIT_NONE ||
                        handoff_lit_size <= 4'd4) &&
-                      (k1q_avail >= {1'b0, handoff_adv});
+                      avail_ge(k1q_avail_raw, k1q_avail_lim, {1'b0, handoff_adv});
 wire [3:0] handoff_raw_need = (handoff_work.lit2_kind == LIT_NONE ||
                                handoff_lit_size <= 4'd4)
                             ? handoff_lit_size
                             : {1'b0, handoff_work.lit1_size};
 wire [5:0] handoff_raw_end = {1'b0, handoff_raw_lit_off_w} +
                              {2'b00, handoff_raw_need};
-wire handoff_raw_valid = (k1q_avail >= handoff_raw_end);
+wire handoff_raw_valid = avail_ge(k1q_avail_raw, k1q_avail_lim, handoff_raw_end);
 // Launch the synchronous ROM as soon as structural decode owns an empty D2.
 // D2 holds the returned word while late or second literals are captured.
 assign d1_issue_direct = d1_handoff && !skel_v;

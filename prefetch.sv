@@ -14,6 +14,8 @@ module prefetch
     output     [63:0] k1q,        // registered raw window at the D1 cursor
     output     [63:0] k1q_early,  // speculative window for synchronous entry ROM
     output     [5:0]  k1q_avail,      // bytes fetched beyond the D1 cursor
+    output     [5:0]  k1q_avail_raw,  //   = min(k1q_avail_raw, k1q_avail_lim): the
+    output     [5:0]  k1q_avail_lim,  //   buffered bytes and the CS-limit bound
     input      [3:0]  k1p_adv,        // D1 cursor advance this cycle (0-11: a
                                      //   prefix, or the instruction rest at handoff)
     input      [3:0]  k1p_preread_adv,// structural advance independent of D2 availability
@@ -157,13 +159,14 @@ wire [3:0] k1p_lead_words = k1p_word - pf_rptr;
 wire [6:0] k1p_lead = {1'b0, k1p_lead_words, 2'b00} + {5'b00000, k1p_boff} -
                      {5'b00000, pf_byte_offset};
 wire [7:0] k1q_avail_s = {2'b00, pf_byte_count} - {1'b0, k1p_lead};
-wire [5:0] k1q_avail_raw = k1q_avail_s[7] ? 6'd0 : k1q_avail_s[5:0];
+assign k1q_avail_raw = k1q_avail_s[7] ? 6'd0 : k1q_avail_s[5:0];
 // The CS limit bounds both decode windows (Intel486 PRM: an instruction any
 // byte of which lies beyond the code-segment limit raises #GP(0); in real
 // mode the limit is 0FFFFh and the fault is interrupt 13).
 wire [7:0] k1_lim_s = {2'b00, fetch_limit_rem} - {1'b0, k1p_lead};
 wire [5:0] k1_lim   = k1_lim_s[7] ? 6'd0 : k1_lim_s[5:0];
 assign k1q_avail = (k1q_avail_raw > k1_lim) ? k1_lim : k1q_avail_raw;
+assign k1q_avail_lim = k1_lim;
 
 // D2 literal window: pop_cursor + k2p_off, over REGISTERED queue words.
 wire [5:0] k2p_sum  = {4'b0000, pf_byte_offset} + {1'b0, k2p_off};
