@@ -65,6 +65,9 @@ module gpr_write_merge
     input  logic [2:0]   dst_shift,
     input  logic [1:0]   size_shift,
     input  logic [31:0]  data_shift,
+    // Producer 0's hit per GPR byte [r*4 + b], registered by the caller:
+    // v_shift && byte b of register dst_norm(0) in be_of_size(size_shift, dst_shift[2]).
+    input  logic [31:0]  hit_shift,
 
     // Producer 1: deferred memory (hardwired load) token.
     input  logic         v_mem,
@@ -325,7 +328,13 @@ for (r = 0; r < 8; r++) begin : g_reg
     for (b = 0; b < 4; b++) begin : g_byte
         // `forwarding` selects the view enable of the write-back: an M3 ALU
         // result is committed but never forwarded.
-        wire hit0 = v_shift && en0[b];
+        wire hit0 = hit_shift[r*4 + b];
+        // synthesis translate_off
+        always_comb
+            if (hit0 !== (v_shift && en0[b]))
+                $fatal(1, "GPR MERGE HIT0: reg %0d byte %0d registered %b, decoded %b",
+                       r, b, hit0, v_shift && en0[b]);
+        // synthesis translate_on
         wire hit1 = hit_mem[r*4 + b];
         // synthesis translate_off
         always_comb

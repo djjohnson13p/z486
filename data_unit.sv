@@ -196,6 +196,8 @@ logic [1:0] recipe_memory_mode;      // Byte-low/high, word, or dword merge
 // write to the same bytes already made the older value architecturally dead.
 logic       recipe_memory_killed;
 logic [31:0] recipe_memory_hit_r;       // producer 1's merge hits, see mem_hit_of
+logic [31:0] recipe_shift_hit_r;        // producer 0's merge hits, see shift_hit_of
+logic [7:0]  recipe_shift_wmask_r;      // its pend_write_mask one-hot
 logic       recipe_shift_killed;
 assign dbg_recipe_mem_killed   = recipe_memory_killed;
 assign dbg_recipe_shift_killed = recipe_shift_killed;
@@ -316,8 +318,7 @@ wire [2:0] load_wb_widx = (load_wb_size == 2'd0)
 //                             commits land on
 // A plain load's WB value is already merged with its destination's prior
 // value; an M3 ALU result is not forwarded (its readers are interlocked).
-wire [7:0] pend_shift_mask = (recipe_shift_write.valid && !recipe_shift_killed)
-                           ? (8'h01 << recipe_shift_widx) : 8'h00;
+wire [7:0] pend_shift_mask = recipe_shift_wmask_r;   // registered, see shift_hit_of
 wire [7:0] pend_dly_mask   = dly_gpr_forward.valid ? (8'h01 << dly_gpr_forward.dst) : 8'h00;
 
 // Producer arbitration.  Every deferred or in-flight register producer is
@@ -388,6 +389,7 @@ gpr_write_merge gpr_merge (
     .cur({edi, esi, ebp, esp, ebx, edx, ecx, eax}),
 
     .v_shift(pr_shift_valid),
+    .hit_shift(recipe_shift_hit_r),
     .dst_shift(recipe_shift_write.dst),
     .size_shift(recipe_shift_write.size),
     .data_shift(recipe_shift_data),
@@ -1034,6 +1036,48 @@ always @(posedge clk)
         $fatal(1, "data_unit: memory-token hits %h disagree with the token", recipe_memory_hit_r);
 // synthesis translate_on
 
+// The same for the deferred shift (producer 0): its merge hits per GPR byte
+// and its pend_write_mask one-hot, (recipe_shift_write.valid &&
+// !recipe_shift_killed) ? ... : 0, registered on the edges those registers
+// change (tests/equiv/shift_hit_reg.v).
+function automatic [31:0] shift_hit_of(input [2:0] dst, input [1:0] size);
+    logic [2:0] r;
+    logic [3:0] be;
+    begin
+        r  = (size == 2'd0) ? {1'b0, dst[1:0]} : dst;
+        be = (size == 2'd0) ? (dst[2] ? 4'h2 : 4'h1) : (size == 2'd1) ? 4'h3 : 4'hF;
+        shift_hit_of = {28'h0, be} << {r, 2'b00};
+    end
+endfunction
+wire       recipe_shift_kill = load_wb_valid && !recipe_commit_cancel &&
+                               (recipe_shift_widx == load_wb_widx);
+wire       recipe_shift_load = recipe_rni && exec && !recipe_commit_cancel &&
+                               (recipe_state.commit_sel == RECIPE_COMMIT_SHIFT);
+always_ff @(posedge clk) begin
+    if (!reset_n) begin
+        recipe_shift_hit_r   <= 32'h0;
+        recipe_shift_wmask_r <= 8'h0;
+    end else if (pipeline_advance) begin
+        recipe_shift_hit_r   <= recipe_shift_load ? shift_hit_of(dst_reg_sel_r, op_size) : 32'h0;
+        recipe_shift_wmask_r <= recipe_shift_load
+                              ? (8'h01 << ((op_size == 2'd0) ? {1'b0, dst_reg_sel_r[1:0]}
+                                                             : dst_reg_sel_r))
+                              : 8'h0;
+    end else if (recipe_shift_kill) begin
+        recipe_shift_hit_r   <= 32'h0;
+        recipe_shift_wmask_r <= 8'h0;
+    end
+end
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && ((recipe_shift_hit_r !==
+                     (pr_shift_valid ? shift_hit_of(recipe_shift_write.dst, recipe_shift_write.size) : 32'h0)) ||
+                    (recipe_shift_wmask_r !==
+                     (pr_shift_valid ? (8'h01 << recipe_shift_widx) : 8'h00))))
+        $fatal(1, "data_unit: shift-token hits %h / mask %b disagree with the token",
+               recipe_shift_hit_r, recipe_shift_wmask_r);
+// synthesis translate_on
+
 // opr_fast_commit needs no destination: once OPR_R is replaced, the token's
 // only data source is gone, so any later recommit would write foreign data.
 always_ff @(posedge clk) begin
@@ -1043,8 +1087,7 @@ always_ff @(posedge clk) begin
     end else if (!pipeline_advance) begin
         if (recipe_memory_kill)
             recipe_memory_killed <= 1'b1;
-        if (load_wb_valid && !recipe_commit_cancel &&
-            (recipe_shift_widx == load_wb_widx))
+        if (recipe_shift_kill)
             recipe_shift_killed <= 1'b1;
     end else begin
         recipe_memory_killed <= 1'b0;
@@ -1134,8 +1177,7 @@ always_ff @(posedge clk) begin
             recipe_memory_mode <= recipe_memory_mode_next;
         end
 
-        recipe_shift_write.valid <= recipe_rni && exec && !recipe_commit_cancel &&
-                                  (recipe_state.commit_sel == RECIPE_COMMIT_SHIFT);
+        recipe_shift_write.valid <= recipe_shift_load;
         if (recipe_rni && exec &&
             (recipe_state.commit_sel == RECIPE_COMMIT_SHIFT)) begin
             recipe_shift_write.dst <= dst_reg_sel_r;
