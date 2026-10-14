@@ -903,13 +903,22 @@ function automatic [1:0] shift2_source_next_decode(input [5:0] source);
         default:    shift2_source_next_decode = 2'd0;
     endcase
 endfunction
+// Both decodes come from the ROM, formed on each port with the port select
+// (pb_slot) last; the reference below restates them on uc_next.
+wire       uc_next_captures_shift_source;
+wire [1:0] uc_next_shift2_source;
+// synthesis translate_off
 wire       uc_next_is_shift2 = uc_next[17:11] == ALUJMP_SHIFT2;
 wire       uc_next_is_src_shift =
     (uc_next[17:11] == ALUJMP_SHIFT) &&
     (uc_next[23:18] == SRC_SRCREG);
-wire       uc_next_captures_shift_source = uc_next_is_shift2 ||
-                                           uc_next_is_src_shift;
-wire [1:0] uc_next_shift2_source = shift2_source_next_decode(uc_next[23:18]);
+always @(posedge clk)
+    if (reset_n &&
+        ((uc_next_captures_shift_source !== (uc_next_is_shift2 || uc_next_is_src_shift)) ||
+         (uc_next_shift2_source !== shift2_source_next_decode(uc_next[23:18]))))
+        $fatal(1, "z486: the ROM's split shift2 decode %b/%0d disagrees with uc_next's",
+               uc_next_captures_shift_source, uc_next_shift2_source);
+// synthesis translate_on
 
 // synthesis translate_off
 // The immutable Intel ROM has only two plain SHIFT words whose source is
@@ -3146,6 +3155,8 @@ microsequencer microsequencer_inst (
     // Microinstruction to the units (port A's ROM output, predecoded)
     .uc(uc),
     .uc_next(uc_next),
+    .uc_next_shift2_source(uc_next_shift2_source),
+    .uc_next_shift_captures(uc_next_captures_shift_source),
     .uc_source_shift(uc_source_shift),
     .uc_shift_source_class(uc_shift_source_class),
     .uc_shift2_source(uc_shift2_source),

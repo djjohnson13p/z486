@@ -73,6 +73,8 @@ module microsequencer
     // port B's at issue) and its predecoded fields
     output logic [50:0] uc,
     output logic [50:0] uc_next,              // the word that becomes uc next cycle
+    output logic [1:0]  uc_next_shift2_source,  // uc_next's SHIFT2 source class (port select last)
+    output logic        uc_next_shift_captures, // uc_next captures a shift operand (port select last)
     output logic [5:0]  uc_source_shift,
     output logic [3:0]  uc_shift_source_class,
     output logic [1:0]  uc_shift2_source,
@@ -258,6 +260,8 @@ ucode_rom microcode_rom_inst (
     .q_ce(rom_q_ce),
     .q_sel_b(pb_slot),
     .q_early(rom_q_early),
+    .q_early_shift2_source(uc_next_shift2_source),
+    .q_early_shift_captures(uc_next_shift_captures),
     .q(rom_q),
     .q_shift_source(uc_source_shift),
     .q_shift_source_class(uc_shift_source_class),

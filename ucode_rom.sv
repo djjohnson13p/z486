@@ -25,6 +25,8 @@ module ucode_rom
     input              q_ce,            // load the output register
     input              q_sel_b,         // it loads port B's word (registered terms only)
     output      [50:0] q_early,         // the selected word, predecoded, before the register
+    output      [1:0]  q_early_shift2_source,   // q_early's SHIFT2 source class (q_sel_b last)
+    output             q_early_shift_captures,  // q_early captures a shift operand (q_sel_b last)
     output      [50:0] q,               // the executing microword
     output      [5:0]  q_shift_source,
     output      [3:0]  q_shift_source_class,
@@ -412,6 +414,20 @@ end
 
 assign q = q_r;
 assign q_early = {ucode_predecode(q_mem[36:0]), q_mem[36:0]};
+// The next word's shifter-capture decode (z486.sv shift2_source_next_decode and
+// uc_next_captures_shift_source of q_early) formed on each port, with q_sel_b
+// selecting the decoded result: q_sel_b is pb_slot, the D2 issue decision, and
+// it otherwise sat in front of the decode on the way to the shifter's
+// shift2_operand_r. decode(sel ? b : a) = sel ? decode(b) : decode(a);
+// tests/equiv/shift2_next_split.v proves it.
+function automatic logic shift_captures_predecode(input [39:0] w);
+    shift_captures_predecode = (w[17:11] == ALUJMP_SHIFT2) ||
+                               ((w[17:11] == ALUJMP_SHIFT) && (w[23:18] == SRC_SRCREG));
+endfunction
+assign q_early_shift2_source = q_sel_b ? shift2_source_predecode(q_mem_b[23:18])
+                                       : shift2_source_predecode(q_mem_a[23:18]);
+assign q_early_shift_captures = q_sel_b ? shift_captures_predecode(q_mem_b)
+                                        : shift_captures_predecode(q_mem_a);
 assign q_kind_early = q_mem_a[39:37];
 assign q_kind_b = q_mem_b[39:37];
 
