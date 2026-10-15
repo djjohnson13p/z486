@@ -349,6 +349,7 @@ always @(posedge clk)
 //                             memory token's stale OPR_R
 //   capture view (direct-load base) the EX set plus the shift token and bypass
 wire [31:0] gpr_ex_view [0:7];
+wire [31:0] gpr_ea_view [0:7];       // the full EA view, left to the benches (see ea_sel_a/b)
 wire [31:0] gpr_capture_view [0:7];
 
 wire        pr_shift_valid = recipe_shift_write.valid && !recipe_shift_killed;
@@ -502,6 +503,7 @@ genvar gv;
 generate
 for (gv = 0; gv < 8; gv++) begin : g_view
     assign gpr_ex_view[gv]      = pr_ex_value[gv*32 +: 32];
+    assign gpr_ea_view[gv]      = pr_ea_value[gv*32 +: 32];
     assign gpr_capture_view[gv] = pr_cap_value[gv*32 +: 32];
 end
 endgenerate
