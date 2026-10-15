@@ -66,8 +66,6 @@ module address_unit
 logic [1:0] ea_scale_r;
 logic       ea_is_16bit_r;
 logic       ea_scale_to_base_r;
-// Powers up as ea_term_selects of all-zero fields (as the fields power up).
-logic [12:0] ea_sel_r = 13'h1010;
 logic [31:0] ea_partial_r;
 logic [31:0] issue_ind_r;
 logic [31:0] exec_ind_r;
@@ -125,89 +123,15 @@ wire        ea_simple_two_regs = ea_base.valid && ea_index.valid &&
                                  !ea_scale_to_base_r;
 wire [31:0] ea_simple_a = ea_base.valid ? ea_term_a_live : ea_term_b_live;
 wire [31:0] ea_simple_b = ea_simple_two_regs ? ea_term_b_live : displacement;
-// The two simple terms as AND-OR picks of the GPR values under one-hot selects
-// registered at d2_start beside the fields they decode (ea_sel_r ==
-// ea_term_selects of ea_base.valid, ea_index.valid, ea_scale_to_base_r and
-// ea_scale_r in every cycle after the first d2_start), so the scale, the
-// scale-to-base and the valid decodes are not per-bit LUT levels between the
-// forwarded GPR value and the adder (C4: ea_value -> Mux -> ea_terms ->
-// ea_simple -> ea_add_a). tests/equiv/ea_term_selects.v proves the picks equal
-// ea_simple_a/ea_simple_b for every input; a translate_off fuse compares them
-// every cycle.
-function automatic logic [12:0] ea_term_selects(
-    input logic       base_valid,
-    input logic       index_valid,
-    input logic       s2b,
-    input logic [1:0] scale
-);
-    logic [3:0] sc;
-    logic       two_regs;
-    begin
-        sc = 4'b0001 << scale;
-        two_regs = base_valid && index_valid && !s2b;
-        // [3:0] a = base << k; [7:4] a = index << k; [11:8] b = index << k; [12] b = disp
-        ea_term_selects[3:0]  = base_valid ? (s2b ? sc : 4'b0001) : 4'b0000;
-        ea_term_selects[7:4]  = (!base_valid && !s2b) ? sc : 4'b0000;
-        ea_term_selects[11:8] = two_regs ? sc : 4'b0000;
-        ea_term_selects[12]   = !two_regs;
-    end
-endfunction
-function automatic logic [31:0] ea_pick(input logic [3:0] sel, input logic [31:0] v);
-    ea_pick = ({32{sel[0]}} & v) | ({32{sel[1]}} & {v[30:0], 1'b0}) |
-              ({32{sel[2]}} & {v[29:0], 2'b0}) | ({32{sel[3]}} & {v[28:0], 3'b0});
-endfunction
-wire [31:0] ea_pick_a = ea_pick(ea_sel_r[3:0], ea_base_value) |
-                        ea_pick(ea_sel_r[7:4], ea_index_value);
-wire [31:0] ea_pick_b = ({32{ea_sel_r[12]}} & displacement) |
-                        ea_pick(ea_sel_r[11:8], ea_index_value);
-wire [31:0] ea_add_a = split_ea_use ? ea_partial_r : ea_pick_a;
-wire [31:0] ea_add_b = split_ea_use ? displacement : ea_pick_b;
-// synthesis translate_off
-logic ea_sel_loaded = 1'b0;
-always @(posedge clk) begin
-    if (d2_start)
-        ea_sel_loaded <= 1'b1;
-    if (ea_sel_loaded &&
-        ((ea_sel_r !== ea_term_selects(ea_base.valid, ea_index.valid,
-                                       ea_scale_to_base_r, ea_scale_r)) ||
-         (ea_pick_a !== ea_simple_a) || (ea_pick_b !== ea_simple_b)))
-        $fatal(1, "EA-PICK FUSE MISMATCH: sel=%013b a=%08x/%08x b=%08x/%08x",
-               ea_sel_r, ea_pick_a, ea_simple_a, ea_pick_b, ea_simple_b);
-end
-// synthesis translate_on
+wire [31:0] ea_add_a = split_ea_use ? ea_partial_r : ea_simple_a;
+wire [31:0] ea_add_b = split_ea_use ? displacement : ea_simple_b;
 wire [31:0] ea_offset_full = ea_add_a + ea_add_b;
 wire [31:0] effective_addr = ea_is_16bit_r
                            ? {16'd0, ea_offset_full[15:0]} : ea_offset_full;
-// The relocated address of a two-term offset, (wrap16 ? {16'd0, (a + b)[15:0]}
-// : a + b) + seg, formed without the offset sum in front of the relocation
-// adder: the 32-bit arm is one three-input sum; the 16-bit arm takes its low
-// half from that sum (equal mod 2^16) and adds to seg[31:16] the carry out of
-// ((a + b) mod 2^16) + seg[15:0], which is t[16] when a[15:0] + b[15:0] does
-// not carry (c16 = 0) and t[17] when it does, t being the 18-bit three-input
-// sum of the low halves (t - c16 * 2^16 is that 17-bit sum). Two carry
-// chains in series become one on the 32-bit arm (the C4 EA -> VIPT/L1 index
-// paths ran ea_add_a -> Add0 -> Add1); tests/equiv/fused_linear.v proves this
-// text equal to the two-adder form for every input.
-function automatic logic [31:0] fused_linear(
-    input logic [31:0] a,
-    input logic [31:0] b,
-    input logic [31:0] seg,
-    input logic        wrap16
-);
-    logic [31:0] l32;
-    logic [17:0] t;
-    logic [16:0] ab16;
-    logic        carry_hi;
-    begin
-        l32 = a + b + seg;
-        t = {2'd0, a[15:0]} + {2'd0, b[15:0]} + {2'd0, seg[15:0]};
-        ab16 = {1'b0, a[15:0]} + {1'b0, b[15:0]};
-        carry_hi = ab16[16] ? t[17] : t[16];
-        fused_linear = wrap16 ? {seg[31:16] + {15'd0, carry_hi}, l32[15:0]} : l32;
-    end
-endfunction
-wire [31:0] effective_linear = fused_linear(ea_add_a, ea_add_b, issue_seg_base,
-                                            ea_is_16bit_r || !issue_eff_mask);
+wire [31:0] linear32 = ea_offset_full + issue_seg_base;
+wire [31:0] linear16 = {16'd0, ea_offset_full[15:0]} + issue_seg_base;
+wire [31:0] effective_linear = (ea_is_16bit_r || !issue_eff_mask)
+                             ? linear16 : linear32;
 // Alignment participates in same-cycle VIPT admission. It depends only on the
 // low address bits, so keep both full-width EA and relocation adders out of it.
 wire [3:0] issue_linear_low_sum = {2'b0, ea_add_a[1:0]} +
@@ -233,8 +157,6 @@ always_ff @(posedge clk) begin
         ea_scale_r <= d2_ea.scale;
         ea_is_16bit_r <= d2_ea.is16;
         ea_scale_to_base_r <= d2_ea.s2b;
-        ea_sel_r <= ea_term_selects(|d2_ea.base_sel, |d2_ea.index_sel,
-                                    d2_ea.s2b, d2_ea.scale);
     end
 end
 
@@ -444,35 +366,9 @@ wire [31:0] issue_stack_offset = instr.stack_dir
     ? (ss_stack32 ? forwarded_esp : {16'd0, forwarded_esp[15:0]})
     : (ss_stack32 ? forwarded_esp - (instr.data32 ? 32'd4 : 32'd2)
                   : {16'd0, forwarded_esp[15:0] - (instr.data32 ? 16'd4 : 16'd2)});
-// relocate_issue(issue_stack_offset) as one relocation of ESP plus the push
-// stride (0 for a pop, -4/-2 for a push; its low half is the 16-bit stride
-// mod 2^16), wrapped to 16 bits unless both the stack and the address mask
-// are 32-bit: the stride subtract is no longer in series with the relocation
-// adder (forwarded_esp -> Add12 -> Add14 -> the VIPT/L1 probe). Equal for
-// every input (tests/equiv/fused_linear.v, the stack arm).
-wire [31:0] issue_stack_stride = instr.stack_dir ? 32'd0
-                               : (instr.data32 ? -32'd4 : -32'd2);
-wire [31:0] issue_stack_linear = fused_linear(forwarded_esp, issue_stack_stride,
-                                              issue_seg_base,
-                                              !(ss_stack32 && issue_eff_mask));
-assign issue_mem_linear = instr.stack_op ? issue_stack_linear
-                        : instr.has_moffs ? relocate_issue(instr.immediate)
+assign issue_mem_linear = (instr.stack_op || instr.has_moffs)
+                        ? relocate_issue(instr.stack_op ? issue_stack_offset : instr.immediate)
                         : effective_linear;
-// synthesis translate_off
-always @(posedge clk)
-    if (reset_n && instr.stack_op &&
-        (issue_stack_linear !== relocate_issue(issue_stack_offset)))
-        $fatal(1, "STACK-LIN FUSE MISMATCH: fused=%08x ref=%08x esp=%08x seg=%08x",
-               issue_stack_linear, relocate_issue(issue_stack_offset),
-               forwarded_esp, issue_seg_base);
-always @(posedge clk)
-    if (reset_n && (effective_linear !==
-                    ((ea_is_16bit_r || !issue_eff_mask)
-                         ? {16'd0, ea_offset_full[15:0]} + issue_seg_base
-                         : ea_offset_full + issue_seg_base)))
-        $fatal(1, "EA-LIN FUSE MISMATCH: fused=%08x a=%08x b=%08x seg=%08x",
-               effective_linear, ea_add_a, ea_add_b, issue_seg_base);
-// synthesis translate_on
 
 // z486.sv sizes a RD W/WR W access by |IND_DELTA| == 4; the compare is formed
 // on the value as it is written, beside ind_delta, so the 32-bit compare is
