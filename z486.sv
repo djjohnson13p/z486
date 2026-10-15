@@ -204,6 +204,7 @@ reg [1:0]  srcreg_size_decode;      // Decoded srcreg_size (saved at i_issue, re
 // data unit's operand formatting and the dword decode. Preserved registers are
 // not duplicated by the fitter, so the copies are explicit.
 `Z486_KEEP reg [1:0] op_size_du;             // data unit operand size
+reg        op_size_du_is0, op_size_du_is1; // op_size_du == 0 / == 1, loaded with it
 `Z486_KEEP reg [1:0] op_size_dw;             // is_dword
 `Z486_KEEP reg [1:0] op_size_src_decode;
 `Z486_KEEP reg [1:0] srcreg_size_src;
@@ -3387,6 +3388,29 @@ always_ff @(posedge clk) begin
     end
 end
 
+// op_size_du's size compares, registered on the edges op_size_du is written
+// from the value written (the always_ff above, branch for branch), so the
+// data unit's sized operand reads select on a flop instead of a compare of
+// the fo ~400 op_size_du (tests/equiv/op_size_dec_reg.v).
+function automatic logic [1:0] size_is01(input logic [1:0] sz);
+    size_is01 = {sz == 2'd1, sz == 2'd0};
+endfunction
+always_ff @(posedge clk) begin
+    if (!reset_n) begin
+        {op_size_du_is1, op_size_du_is0} <= size_is01(2'd1);
+    end else if (i_issue && !halted) begin
+        {op_size_du_is1, op_size_du_is0} <= size_is01(i_bus.operand_size);
+    end else if (uc_exec) begin
+        case (uc_aluop)
+            ALUJMP_BITS8:  {op_size_du_is1, op_size_du_is0} <= size_is01(2'd0);
+            ALUJMP_BITS16: {op_size_du_is1, op_size_du_is0} <= size_is01(2'd1);
+            ALUJMP_BITS32: {op_size_du_is1, op_size_du_is0} <= size_is01(2'd2);
+            ALUJMP_BITSDE: {op_size_du_is1, op_size_du_is0} <= size_is01(op_size_src_decode);
+            default: ;
+        endcase
+    end
+end
+
 // GPR and internal registers
 always_ff @(posedge clk) begin
     automatic logic [31:0] external_dest_value;
@@ -3719,6 +3743,8 @@ data_unit data_unit_inst (
     .instr(i),
     .next_instr(i_bus),
     .op_size(op_size_du),
+    .op_size_is0(op_size_du_is0),
+    .op_size_is1(op_size_du_is1),
     .srcreg_size(srcreg_size_src),
     .op_size_src(op_size_src),
     .srcreg_size_src(srcreg_size_src),

@@ -226,6 +226,8 @@ module tb_load_waw;
         .shift2_next_source(shift2_next_source),
         .shift_uc_carry(shift_uc_carry),
         .op_size(op_size),
+        .op_size_is0(op_size == 2'd0),
+        .op_size_is1(op_size == 2'd1),
         .srcreg_size(srcreg_size),
         .op_size_src(op_size_src),
         .srcreg_size_src(srcreg_size_src),

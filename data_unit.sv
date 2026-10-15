@@ -53,6 +53,8 @@ module data_unit
     input  dec_entry_t  instr,
     input  dec_entry_t  next_instr,              // D2 instruction for setup lookahead
     input  logic [1:0]  op_size,
+    input  logic        op_size_is0,             // op_size == 0, registered beside it
+    input  logic        op_size_is1,             // op_size == 1, registered beside it
     input  logic [1:0]  srcreg_size,
     input  logic [1:0]  op_size_src,             // Source-mux operand size
     input  logic [1:0]  srcreg_size_src,          // Source-mux register size
@@ -521,6 +523,31 @@ function automatic logic [31:0] read_gpr_load_forwarded_late(
     end
 endfunction
 
+// read_gpr_load_forwarded_late at op_size, with the size compares taken from
+// z486's registered decode (op_size_is0/is1 == op_size == 0/1 in every cycle):
+// the fitted op_size_du (fo ~400) -> Equal -> the shifter/ALU operand mux
+// paths lose the compare LUT and its routing hop. tests/equiv/
+// op_size_dec_reg.v proves the registered decode equal to the compare by
+// induction over z486's load edges; a translate_off fuse checks it every cycle.
+function automatic logic [31:0] read_gpr_load_forwarded_op(input logic [2:0] reg_sel);
+    logic [31:0] byte_src, full_src;
+    logic [7:0]  byte_val;
+    begin
+        byte_src = gpr_ex_view[{1'b0, reg_sel[1:0]}];
+        full_src = gpr_ex_view[reg_sel];
+        byte_val = reg_sel[2] ? byte_src[15:8] : byte_src[7:0];
+        read_gpr_load_forwarded_op = op_size_is0 ? {24'd0, byte_val} :
+                                     op_size_is1 ? {16'd0, full_src[15:0]} :
+                                                   full_src;
+    end
+endfunction
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && ((op_size_is0 !== (op_size == 2'd0)) || (op_size_is1 !== (op_size == 2'd1))))
+        $fatal(1, "data_unit: op_size decode %b%b disagrees with op_size %0d",
+               op_size_is0, op_size_is1, op_size);
+// synthesis translate_on
+
 // An EX operand read, formatted to its size: the read with the size applied
 // last (read_gpr_load_forwarded_late), for every caller. The sizes the callers
 // pass (op_size, op_size_src, srcreg_size_src, shift_data_size) are
@@ -665,8 +692,8 @@ function automatic logic [31:0] read_alu_source(input logic [5:0] field);
             (op_size == 2'd0 ? 32'd1 : op_size == 2'd1 ? 32'd2 : 32'd4);
         ALUSRC_BITS_V: read_alu_source = op_size == 2'd0 ? 32'd7 :
                                           op_size == 2'd2 ? 32'd31 : 32'd15;
-        ALUSRC_DSTREG: read_alu_source = read_gpr_load_forwarded(dst_reg_sel_r, op_size);
-        ALUSRC_SRCREG: read_alu_source = read_gpr_load_forwarded(src_reg_sel_r, op_size);
+        ALUSRC_DSTREG: read_alu_source = read_gpr_load_forwarded_op(dst_reg_sel_r);
+        ALUSRC_SRCREG: read_alu_source = read_gpr_load_forwarded_op(src_reg_sel_r);
         ALUSRC_ZERO: read_alu_source = 32'd0;
         default: read_alu_source = 32'd0;
     endcase
@@ -1932,7 +1959,7 @@ shifter shifter_inst (
     .op_size(op_size),
     .alu_dst(alu_dst),
     .alu_src(alu_src),
-    .gpr_src_op_size(read_gpr_load_forwarded(src_reg_sel_r, op_size)),
+    .gpr_src_op_size(read_gpr_load_forwarded_op(src_reg_sel_r)),
     .gpr_dst_shift_size(read_gpr_load_forwarded_late(dst_reg_sel_r, shift_data_size)),
     .gpr_src_shift_size(read_gpr_load_forwarded(src_reg_sel_r, shift_data_size)),
     .immediate(instr.immediate),
