@@ -66,6 +66,8 @@ module address_unit
 logic [1:0] ea_scale_r;
 logic       ea_is_16bit_r;
 logic       ea_scale_to_base_r;
+// Powers up as ea_term_selects of all-zero fields (as the fields power up).
+logic [12:0] ea_sel_r = 13'h1010;
 logic [31:0] ea_partial_r;
 logic [31:0] issue_ind_r;
 logic [31:0] exec_ind_r;
@@ -123,8 +125,56 @@ wire        ea_simple_two_regs = ea_base.valid && ea_index.valid &&
                                  !ea_scale_to_base_r;
 wire [31:0] ea_simple_a = ea_base.valid ? ea_term_a_live : ea_term_b_live;
 wire [31:0] ea_simple_b = ea_simple_two_regs ? ea_term_b_live : displacement;
-wire [31:0] ea_add_a = split_ea_use ? ea_partial_r : ea_simple_a;
-wire [31:0] ea_add_b = split_ea_use ? displacement : ea_simple_b;
+// The two simple terms as AND-OR picks of the GPR values under one-hot selects
+// registered at d2_start beside the fields they decode (ea_sel_r ==
+// ea_term_selects of ea_base.valid, ea_index.valid, ea_scale_to_base_r and
+// ea_scale_r in every cycle after the first d2_start), so the scale, the
+// scale-to-base and the valid decodes are not per-bit LUT levels between the
+// forwarded GPR value and the adder (C4: ea_value -> Mux -> ea_terms ->
+// ea_simple -> ea_add_a). tests/equiv/ea_term_selects.v proves the picks equal
+// ea_simple_a/ea_simple_b for every input; a translate_off fuse compares them
+// every cycle.
+function automatic logic [12:0] ea_term_selects(
+    input logic       base_valid,
+    input logic       index_valid,
+    input logic       s2b,
+    input logic [1:0] scale
+);
+    logic [3:0] sc;
+    logic       two_regs;
+    begin
+        sc = 4'b0001 << scale;
+        two_regs = base_valid && index_valid && !s2b;
+        // [3:0] a = base << k; [7:4] a = index << k; [11:8] b = index << k; [12] b = disp
+        ea_term_selects[3:0]  = base_valid ? (s2b ? sc : 4'b0001) : 4'b0000;
+        ea_term_selects[7:4]  = (!base_valid && !s2b) ? sc : 4'b0000;
+        ea_term_selects[11:8] = two_regs ? sc : 4'b0000;
+        ea_term_selects[12]   = !two_regs;
+    end
+endfunction
+function automatic logic [31:0] ea_pick(input logic [3:0] sel, input logic [31:0] v);
+    ea_pick = ({32{sel[0]}} & v) | ({32{sel[1]}} & {v[30:0], 1'b0}) |
+              ({32{sel[2]}} & {v[29:0], 2'b0}) | ({32{sel[3]}} & {v[28:0], 3'b0});
+endfunction
+wire [31:0] ea_pick_a = ea_pick(ea_sel_r[3:0], ea_base_value) |
+                        ea_pick(ea_sel_r[7:4], ea_index_value);
+wire [31:0] ea_pick_b = ({32{ea_sel_r[12]}} & displacement) |
+                        ea_pick(ea_sel_r[11:8], ea_index_value);
+wire [31:0] ea_add_a = split_ea_use ? ea_partial_r : ea_pick_a;
+wire [31:0] ea_add_b = split_ea_use ? displacement : ea_pick_b;
+// synthesis translate_off
+logic ea_sel_loaded = 1'b0;
+always @(posedge clk) begin
+    if (d2_start)
+        ea_sel_loaded <= 1'b1;
+    if (ea_sel_loaded &&
+        ((ea_sel_r !== ea_term_selects(ea_base.valid, ea_index.valid,
+                                       ea_scale_to_base_r, ea_scale_r)) ||
+         (ea_pick_a !== ea_simple_a) || (ea_pick_b !== ea_simple_b)))
+        $fatal(1, "EA-PICK FUSE MISMATCH: sel=%013b a=%08x/%08x b=%08x/%08x",
+               ea_sel_r, ea_pick_a, ea_simple_a, ea_pick_b, ea_simple_b);
+end
+// synthesis translate_on
 wire [31:0] ea_offset_full = ea_add_a + ea_add_b;
 wire [31:0] effective_addr = ea_is_16bit_r
                            ? {16'd0, ea_offset_full[15:0]} : ea_offset_full;
@@ -183,6 +233,8 @@ always_ff @(posedge clk) begin
         ea_scale_r <= d2_ea.scale;
         ea_is_16bit_r <= d2_ea.is16;
         ea_scale_to_base_r <= d2_ea.s2b;
+        ea_sel_r <= ea_term_selects(|d2_ea.base_sel, |d2_ea.index_sel,
+                                    d2_ea.s2b, d2_ea.scale);
     end
 end
 
