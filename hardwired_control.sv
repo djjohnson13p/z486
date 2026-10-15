@@ -61,6 +61,7 @@ module hardwired_control
     output logic        fold_active,      // Jcc folded into predecessor delay slot
     output logic        branch_ustep_rni,  // Hardwired branch supplies synthetic RNI
     output logic        branch_ustep_exec, // Execute hardwired branch uStep
+    output logic        branch_ustep_take, // the uStep's branch is taken (unqualified by exec)
     output logic        branch_redirect   // Hardwired branch redirects frontend
 );
 
@@ -396,8 +397,8 @@ assign pb_issue = pb_dead_slot && pb_b1_ready && (pb_load_slot_r || load_wb_reti
 // redirect itself remains execution-qualified below.
 assign branch_ustep_rni = i_first && branch_ustep_r;
 assign branch_ustep_exec = branch_ustep_rni && uc_exec;
-assign branch_redirect = branch_ustep_exec &&
-                         (!branch_ustep_jcc_r || jcc_exec_taken);
+assign branch_ustep_take = !branch_ustep_jcc_r || jcc_exec_taken;
+assign branch_redirect = branch_ustep_exec && branch_ustep_take;
 
 always_ff @(posedge clk) begin
     if (!reset_n) begin

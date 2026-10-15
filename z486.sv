@@ -678,6 +678,7 @@ wire       recipe_rni;                       // Current uStep contains RNI
 wire       branch_ustep_redirect;     // bounded branch uStep redirects frontend
 wire       branch_ustep_rni;          // synthetic RNI, independent of execution stall
 wire       branch_ustep_exec;         // execute bounded branch uStep this cycle
+wire       branch_ustep_take;         // that uStep's branch is taken (condition only)
 recipe_meta_t d2_recipe;             // D2 instruction's generated recipe class
 wire       x87_direct_candidate;              // D2 entry is the direct x87 overlay
 wire       flags_backup_active;     // Set at i_issue/FLGSBA, cleared on interrupt_entry - guards FLAGSB writes
@@ -1169,17 +1170,45 @@ end
 assign spec_target_off = d2_ret_pred ? rsb[rsb_top_r] : spec_target_eip;
 assign spec_target_lin = CS_base + spec_target_off;
 // A relative branch in D2 requests its target line; an EIP write cancels the request.
-wire        eip_write_now = branch_ustep_redirect || ret_redirect ||
-                            (uc_exec && ((uc_dest == DEST_EIP) || (uc_dest == DEST_eIP) ||
-                                         (uc_dest == DEST_IP) ||
-                                         (uc_dest == DEST_USTEP_RPTI_EIP)));
+wire        eip_write_other = ret_redirect ||
+                              (uc_exec && ((uc_dest == DEST_EIP) || (uc_dest == DEST_eIP) ||
+                                           (uc_dest == DEST_IP) ||
+                                           (uc_dest == DEST_USTEP_RPTI_EIP)));
+wire        eip_write_now = branch_ustep_redirect || eip_write_other;
 reg         d2_spec_sent_r;            // the D2 branch's target line is requested
 // A hardwired branch uStep that executes not taken no longer needs its line.
 wire        spec_owner_release = branch_ustep_exec && !branch_ustep_redirect;
-assign pf_spec_req = d2_resident && d2_push &&
+// The request formed on both values of the branch uStep's taken condition,
+// which selects last: the forwarded flags -> Jcc condition -> branch_redirect
+// -> eip_write_now / spec_owner_release -> pf_spec_req -> the prefetch spec
+// line was an SP limiter. With the condition taken the redirect is
+// branch_ustep_exec and no release happens; not taken, there is no redirect
+// and the release is branch_ustep_exec (spec_req_on_take; tests/equiv/
+// spec_req_take.v proves it equal to the single form for every input, and a
+// translate_off fuse compares them every cycle).
+function automatic logic spec_req_on_take(
+    input logic pre,      // everything but the branch uStep's terms
+    input logic ustep,    // branch_ustep_exec
+    input logic owner,    // pf_spec_owner_r
+    input logic take      // branch_ustep_take
+);
+    spec_req_on_take = take ? (pre && !ustep && !owner)
+                            : (pre && !(owner && !ustep));
+endfunction
+wire        pf_spec_req_pre = d2_resident && d2_push &&
+                              ((i_bus.rel_branch_kind != REL_BRANCH_NONE) || d2_ret_pred) &&
+                              !hardwired_off && !d2_spec_sent_r && !eip_write_other;
+assign pf_spec_req = spec_req_on_take(pf_spec_req_pre, branch_ustep_exec,
+                                      pf_spec_owner_r, branch_ustep_take);
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && (pf_spec_req !== (d2_resident && d2_push &&
                      ((i_bus.rel_branch_kind != REL_BRANCH_NONE) || d2_ret_pred) &&
                      !hardwired_off && !d2_spec_sent_r && !eip_write_now &&
-                     !(pf_spec_owner_r && !spec_owner_release);
+                     !(pf_spec_owner_r && !spec_owner_release))))
+        $fatal(1, "PF SPEC REQ SPLIT MISMATCH: req=%b exec=%b take=%b owner=%b",
+               pf_spec_req, branch_ustep_exec, branch_ustep_take, pf_spec_owner_r);
+// synthesis translate_on
 // A RET checks its prediction when its probe resolves in EX.
 wire        ret_pred_wrong = vipt_load_ex_r.valid && vipt_load_ex_probed_r &&
                              vipt_load_ex_r.is_ret &&
@@ -1445,6 +1474,7 @@ hardwired_control hardwired_control_inst (
     .fold_active(jcc_fold_active),
     .branch_ustep_rni(branch_ustep_rni),
     .branch_ustep_exec(branch_ustep_exec),
+    .branch_ustep_take(branch_ustep_take),
     .branch_redirect(branch_ustep_redirect)
 );
 
