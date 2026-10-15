@@ -336,8 +336,9 @@ task automatic div7_calc(
     sign_mask = ~((35'd1 << (width + 2)) - 35'd1);
     r_alu_a = r_shifted[width+1] ?
         ({1'b0, r_shifted} | sign_mask) : {1'b0, r_shifted};
-    r_next_full = r_nonneg_prev_in ?
-        (r_alu_a - {3'b0, d}) : (r_alu_a + {3'b0, d});
+    // One adder: a - d is a + ~d + 1.
+    r_next_full = r_alu_a + ({3'b0, d} ^ {35{r_nonneg_prev_in}}) +
+                  {34'd0, r_nonneg_prev_in};
     r_nonneg_out = ~r_next_full[width+2];
     q_next = q << 1;
     q_next[0] = r_nonneg_out;
