@@ -491,39 +491,49 @@ assign align_fault = check_en && is_mem_op && (seg_sel != SEG_IO) &&
                      align_violation &&
                      !(rm_limit_fault || pm_limit_fault || write_fault || read_fault);
 
-function automatic [31:0] seg_base_for(input [3:0] sel, input dsw);
+// The descriptor-switch (dsw) key only redirects SS to CS, so the keyed forms
+// share one selector tree and swap that one leaf after it.
+function automatic [31:0] seg_base_nodsw(input [3:0] sel);
     case (sel)
-        SEG_ES: seg_base_for = ES_base;
-        SEG_CS: seg_base_for = CS_base;
-        SEG_SS: seg_base_for = dsw ? CS_base : SS_base;
-        SEG_DS: seg_base_for = DS_base;
-        SEG_FS: seg_base_for = FS_base;
-        SEG_GS: seg_base_for = GS_base;
-        SEG_TR: seg_base_for = desc_cache[6].base;
+        SEG_ES: seg_base_nodsw = ES_base;
+        SEG_CS: seg_base_nodsw = CS_base;
+        SEG_SS: seg_base_nodsw = SS_base;
+        SEG_DS: seg_base_nodsw = DS_base;
+        SEG_FS: seg_base_nodsw = FS_base;
+        SEG_GS: seg_base_nodsw = GS_base;
+        SEG_TR: seg_base_nodsw = desc_cache[6].base;
         // Descriptor-table pseudo-segments: the table base is the relocation
         // base (offset = selector index*8 / IDT offset lives in IND).  GDT vs LDT
         // is chosen by the selector's TI bit (slctr[2]); all DESSDT accesses
         // route the selector through SLCTR.
-        SEG_GDT: seg_base_for = slctr[2] ? desc_cache[7].base : gdt_base;
-        SEG_IDT: seg_base_for = idt_base;
-        default: seg_base_for = 32'h0;
+        SEG_GDT: seg_base_nodsw = slctr[2] ? desc_cache[7].base : gdt_base;
+        SEG_IDT: seg_base_nodsw = idt_base;
+        default: seg_base_nodsw = 32'h0;
+    endcase
+endfunction
+
+function automatic [31:0] seg_base_for(input [3:0] sel, input dsw);
+    seg_base_for = (dsw && sel == SEG_SS) ? CS_base : seg_base_nodsw(sel);
+endfunction
+
+function automatic [20:0] raw_limit_nodsw(input [3:0] sel);
+    case (sel)
+        SEG_ES:  raw_limit_nodsw = {desc_cache[SEG_ES].G, desc_cache[SEG_ES].limit};
+        SEG_CS:  raw_limit_nodsw = {desc_cache[SEG_CS].G, desc_cache[SEG_CS].limit};
+        SEG_SS:  raw_limit_nodsw = {desc_cache[SEG_SS].G, desc_cache[SEG_SS].limit};
+        SEG_DS:  raw_limit_nodsw = {desc_cache[SEG_DS].G, desc_cache[SEG_DS].limit};
+        SEG_FS:  raw_limit_nodsw = {desc_cache[SEG_FS].G, desc_cache[SEG_FS].limit};
+        SEG_GS:  raw_limit_nodsw = {desc_cache[SEG_GS].G, desc_cache[SEG_GS].limit};
+        SEG_TR:  raw_limit_nodsw = {desc_cache[6].G, desc_cache[6].limit};
+        SEG_LDT: raw_limit_nodsw = {desc_cache[7].G, desc_cache[7].limit};
+        default: raw_limit_nodsw = 21'h1F_FFFF;
     endcase
 endfunction
 
 function automatic [20:0] raw_limit_for(input [3:0] sel, input dsw);
-    case (sel)
-        SEG_ES:  raw_limit_for = {desc_cache[SEG_ES].G, desc_cache[SEG_ES].limit};
-        SEG_CS:  raw_limit_for = {desc_cache[SEG_CS].G, desc_cache[SEG_CS].limit};
-        SEG_SS:  raw_limit_for = dsw
-                               ? {desc_cache[SEG_CS].G, desc_cache[SEG_CS].limit}
-                               : {desc_cache[SEG_SS].G, desc_cache[SEG_SS].limit};
-        SEG_DS:  raw_limit_for = {desc_cache[SEG_DS].G, desc_cache[SEG_DS].limit};
-        SEG_FS:  raw_limit_for = {desc_cache[SEG_FS].G, desc_cache[SEG_FS].limit};
-        SEG_GS:  raw_limit_for = {desc_cache[SEG_GS].G, desc_cache[SEG_GS].limit};
-        SEG_TR:  raw_limit_for = {desc_cache[6].G, desc_cache[6].limit};
-        SEG_LDT: raw_limit_for = {desc_cache[7].G, desc_cache[7].limit};
-        default: raw_limit_for = 21'h1F_FFFF;
-    endcase
+    raw_limit_for = (dsw && sel == SEG_SS)
+                  ? {desc_cache[SEG_CS].G, desc_cache[SEG_CS].limit}
+                  : raw_limit_nodsw(sel);
 endfunction
 
 function automatic [31:0] expand_raw_limit(input [20:0] raw_limit);
@@ -547,18 +557,22 @@ endfunction
 
 // The same selector/dsw key raw_limit_for uses, so the ED/D-B bits registered
 // with seg_limit_r always describe the descriptor the limit came from.
-function automatic [1:0] ed_big_for(input [3:0] sel, input dsw);
+function automatic [1:0] ed_big_nodsw(input [3:0] sel);
     case (sel)
-        SEG_ES: ed_big_for = ed_big_of(desc_cache[SEG_ES]);
-        SEG_CS: ed_big_for = ed_big_of(desc_cache[SEG_CS]);
-        SEG_SS: ed_big_for = dsw ? ed_big_of(desc_cache[SEG_CS])
-                                 : ed_big_of(desc_cache[SEG_SS]);
-        SEG_DS: ed_big_for = ed_big_of(desc_cache[SEG_DS]);
-        SEG_FS: ed_big_for = ed_big_of(desc_cache[SEG_FS]);
-        SEG_GS: ed_big_for = ed_big_of(desc_cache[SEG_GS]);
-        SEG_TR: ed_big_for = ed_big_of(desc_cache[6]);
-        default: ed_big_for = 2'b00;
+        SEG_ES: ed_big_nodsw = ed_big_of(desc_cache[SEG_ES]);
+        SEG_CS: ed_big_nodsw = ed_big_of(desc_cache[SEG_CS]);
+        SEG_SS: ed_big_nodsw = ed_big_of(desc_cache[SEG_SS]);
+        SEG_DS: ed_big_nodsw = ed_big_of(desc_cache[SEG_DS]);
+        SEG_FS: ed_big_nodsw = ed_big_of(desc_cache[SEG_FS]);
+        SEG_GS: ed_big_nodsw = ed_big_of(desc_cache[SEG_GS]);
+        SEG_TR: ed_big_nodsw = ed_big_of(desc_cache[6]);
+        default: ed_big_nodsw = 2'b00;
     endcase
+endfunction
+
+function automatic [1:0] ed_big_for(input [3:0] sel, input dsw);
+    ed_big_for = (dsw && sel == SEG_SS) ? ed_big_of(desc_cache[SEG_CS])
+                                        : ed_big_nodsw(sel);
 endfunction
 
 function automatic [3:0] effective_target(input [3:0] target);
