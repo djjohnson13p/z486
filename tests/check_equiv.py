@@ -14,8 +14,8 @@ input bit.  Each proof is run twice:
 The models restate the RTL expressions they prove; each file names its RTL
 site.  A model whose first line is `// check-equiv: tempinduct` is sequential
 and is proved by temporal induction from its declared power-up values.  A line
-`// check-equiv: functions <file> <name>...` (file relative to the model)
-pastes those functions' text from a GENERATED RTL file at the model's
+`// check-equiv: functions <file> <name>...` (file relative to the model; one
+line per file, any number of lines) pastes those functions' text from a GENERATED RTL file at the model's
 `// @@FUNCTIONS@@` line, so the proof runs on the shipped text rather than a
 restatement.  yosys is required: a missing yosys is a FAIL, never a skip.
 """
@@ -44,10 +44,12 @@ def extract_functions(src: pathlib.Path, names: list[str]) -> str:
 def model_source(path: pathlib.Path) -> pathlib.Path:
     """The model as yosys reads it: with any `functions` directive expanded."""
     text = path.read_text()
-    m = re.search(r"^// check-equiv: functions (\S+) (.+)$", text, re.M)
-    if not m:
+    ms = list(re.finditer(r"^// check-equiv: functions (\S+) (.+)$", text, re.M))
+    if not ms:
         return path
-    funcs = extract_functions((path.parent / m.group(1)).resolve(), m.group(2).split())
+    # One or more directive lines, each naming a file and its functions.
+    funcs = "\n".join(extract_functions((path.parent / m.group(1)).resolve(), m.group(2).split())
+                      for m in ms)
     if "// @@FUNCTIONS@@" not in text:
         raise SystemExit(f"check-equiv: {path.name} has no // @@FUNCTIONS@@ line")
     out_dir = HERE / "obj_dir" / "equiv"

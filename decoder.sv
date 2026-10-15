@@ -125,6 +125,37 @@ wire consume_prefix = !prefix_0f && is_prefix(opcode) &&
 wire consume_0f     = !prefix_0f && (opcode == 8'h0f) &&
                       avail_ge(k1q_avail_raw, k1q_avail_lim, 6'd1);
 
+// The entries recipe_effective_entry (ucode_recipes.svh, generated) redirects,
+// one compare each; and that function with each `entry == C` replaced by its
+// hit bit (the hits are one-hot or zero: the constants are distinct).
+function automatic logic [5:0] ov_hits(input logic [11:0] e);
+    ov_hits = {e == 12'h0B6, e == 12'h04E, e == 12'h04A,
+               e == 12'h53C, e == 12'h4C1, e == 12'h4D7};
+endfunction
+function automatic logic [11:0] recipe_effective_entry_hit(
+    input logic [11:0] entry,
+    input logic [5:0]  hit,
+    input logic [7:0]  opcode,
+    input logic [7:0]  modrm
+);
+    recipe_effective_entry_hit = entry;
+    if (hit[0] && ((opcode == 8'hD8) || ((opcode == 8'hD9) && (modrm[5:3] == 3'd0))))
+        recipe_effective_entry_hit = 12'h9C5;
+    if (hit[1] && (modrm[7:6] == 2'b11))
+        recipe_effective_entry_hit = 12'h9D1;
+    if (hit[2] && (modrm[7:6] != 2'b11) && ((opcode == 8'hD9) || (opcode == 8'hDB)) &&
+        ((modrm[5:3] == 3'd2) || (modrm[5:3] == 3'd3)))
+        recipe_effective_entry_hit = 12'h9D3;
+    if (hit[3] && (modrm[7:6] != 2'b11))
+        recipe_effective_entry_hit = 12'h9CB;
+    if (hit[4] && (modrm[7:6] != 2'b11) &&
+        ((((opcode == 8'hF6) || (opcode == 8'hF7)) && ((modrm[5:3] == 3'd2) || (modrm[5:3] == 3'd3))) ||
+         (((opcode == 8'hFE) || (opcode == 8'hFF)) && ((modrm[5:3] == 3'd0) || (modrm[5:3] == 3'd1)))))
+        recipe_effective_entry_hit = 12'h9CE;
+    if (hit[5] && (opcode == 8'h90))
+        recipe_effective_entry_hit = 12'h9C9;
+endfunction
+
 decoder_work_t struct_work;
 logic [2:0]    struct_len;
 // Some simulators do not include signals referenced only inside a task in an
@@ -134,7 +165,8 @@ wire [53:0] struct_work_inputs = {
     opcode, modrm, sib_b, prefix_0f, prefix_rep, prefix_count, data32, addr32,
     prefix_rep_lock, prefix_seg, entry_rom_sel, pe_enable
 };
-always_comb build_struct_work(struct_work_inputs, struct_work, struct_len);
+logic [5:0]    struct_ov_hit;   // ov_hits(struct_work.entry.entry_point), per source
+always_comb build_struct_work(struct_work_inputs, struct_work, struct_len, struct_ov_hit);
 
 wire struct_bytes_ok = avail_ge(k1q_avail_raw, k1q_avail_lim, {3'b000, struct_len});
 
@@ -218,10 +250,25 @@ end
 // the operand from the L1 and write it through the direct store port, while a
 // locked RMW must read memory under LOCK# (lock_insn, the locked-read path).
 // LOCK is #UD on every other overlay's opcode, so no overlay is taken under it.
-wire [11:0] handoff_overlay_entry = recipe_effective_entry(
+// The overlay redirect with its entry compares taken per entry source in
+// structural decode (struct_ov_hit; capture_sib leaves the entry, opcode and
+// ModR/M alone): the D1 entry -> overlay compares -> port-B ROM address cone
+// (k1q -> the PLA / group ROM -> entry mux -> Equal -> d1_issue_entry) loses
+// the compare behind the entry mux. tests/equiv/overlay_entry_hit.v proves
+// recipe_effective_entry_hit(e, ov_hits(e), ...) equal to the generated
+// recipe_effective_entry(e, ...) for every input; a translate_off fuse holds
+// struct_ov_hit == ov_hits(struct_work.entry.entry_point) every cycle.
+wire [11:0] handoff_overlay_entry = recipe_effective_entry_hit(
     handoff_work.entry.entry_point,
+    struct_ov_hit,
     handoff_work.entry.opcode,
     handoff_work.entry.modrm);
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && (struct_ov_hit !== ov_hits(struct_work.entry.entry_point)))
+        $fatal(1, "D1 OVERLAY HIT MISMATCH: hit=%b entry=%03x", struct_ov_hit,
+               struct_work.entry.entry_point);
+// synthesis translate_on
 wire [11:0] handoff_entry_point = (handoff_work.entry.rep_lock == PREFIX_LOCK)
                                 ? handoff_work.entry.entry_point
                                 : handoff_overlay_entry;
@@ -665,10 +712,12 @@ assign decq_has_jmp_call =
 task automatic build_struct_work(
     input logic [53:0]    sensitivity_inputs,
     output decoder_work_t w,
-    output logic [2:0]    s_len
+    output logic [2:0]    s_len,
+    output logic [5:0]    ov_hit
 );
     logic [11:0] ctl_bits;
     logic [15:0] entry_first;
+    logic [15:0] entry_grom;
     logic [15:0] entry_final;
     logic [6:0]  group_dec;
     logic        entry_group;
@@ -727,10 +776,9 @@ task automatic build_struct_work(
         group_dec = pla_group_lookup({data32, opcode, pe_enable, prefix_0f});
         group_code = group_dec[5:0];
         entry_group = group_dec[6] && has_modrm;
-        entry_final = entry_group ?
-            group_entry_rom[{group_code, modrm[5:3],
-                             (modrm[7:6] != 2'b11)}] :
-            entry_first;
+        entry_grom = group_entry_rom[{group_code, modrm[5:3],
+                                      (modrm[7:6] != 2'b11)}];
+        entry_final = entry_group ? entry_grom : entry_first;
         invalid_lock = check_lock_invalid(prefix_rep_lock, prefix_0f, opcode,
                                           has_modrm, modrm);
         instr_bswap = prefix_0f && (opcode[7:3] == 5'b11001);
@@ -799,6 +847,13 @@ task automatic build_struct_work(
                                                         : UADDR_MOV_TR_FROM) :
                               (instr_bswap || instr_xadd || instr_cmpxchg || instr_invd)
                                   ? entry_486 : entry_final[11:0];
+        // The overlay sources' entry compares, taken on each arm of the entry
+        // mux above (same selects, same order) instead of on its result.
+        ov_hit = (invalid_lock || instr_loadall) ? ov_hits(UADDR_INVALID_LOCK) :
+                 instr_mov_tr ? ov_hits(opcode[1] ? UADDR_MOV_TR_TO : UADDR_MOV_TR_FROM) :
+                 (instr_bswap || instr_xadd || instr_cmpxchg || instr_invd)
+                     ? ov_hits(entry_486) :
+                 entry_group ? ov_hits(entry_grom[11:0]) : ov_hits(entry_first[11:0]);
         w.entry.stack_op = (invalid_lock || instr_bswap || instr_xadd || instr_cmpxchg ||
                             instr_invd || instr_loadall || instr_mov_tr) ? 1'b0 : entry_final[13];
         w.entry.stack_dir = (invalid_lock || instr_bswap || instr_xadd || instr_cmpxchg ||
