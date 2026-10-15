@@ -1409,23 +1409,20 @@ wire flag2_sf = flag2_size_r == 2'd0 ? flag2_result_r[7] :
                                             flag2_result_r[31];
 wire flag2_pf = ~^flag2_result_r[7:0];
 
+// A push or pop moves ESP by the operand size, down or up.
+wire [31:0] stack_step = stack_dir ? {29'd0, stack_data32, ~stack_data32, 1'b0}
+                                   : {29'h1FFF_FFFF, stack_data32 ? 2'b10 : 2'b11, 1'b0};
+wire [31:0] stack_sum = forwarded_esp + stack_step;
+
 always_ff @(posedge clk) begin
     if (!reset_n) begin
         sigma <= 32'd0;
     end else begin
         if (instr_start && stack_op) begin
-            logic [31:0] stack_delta;
-            logic [15:0] new_sp;
-
-            stack_delta = stack_data32 ? 32'd4 : 32'd2;
-            if (stack32) begin
-                sigma <= stack_dir ? forwarded_esp + stack_delta
-                                   : forwarded_esp - stack_delta;
-            end else begin
-                new_sp = stack_dir ? forwarded_esp[15:0] + stack_delta[15:0]
-                                   : forwarded_esp[15:0] - stack_delta[15:0];
-                sigma <= {forwarded_esp[31:16], new_sp};
-            end
+            // ESP +/- the operand size as one signed add: the low 16 bits of the
+            // 32-bit sum are the 16-bit stack pointer's wrapped result, so a
+            // 16-bit stack only keeps the upper half of ESP.
+            sigma <= stack32 ? stack_sum : {forwarded_esp[31:16], stack_sum[15:0]};
         end else if (gate_detect) begin
             sigma <= {16'd0, tmpc[31:16]};
         end else if (exec) begin
