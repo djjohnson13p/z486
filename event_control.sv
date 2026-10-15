@@ -29,6 +29,7 @@ module event_control
     input  logic q_flush,
     input  logic d2_resident,      // an instruction occupies D2 (port A or port B)
     input  logic i_issue,
+    input  logic i_issue_seq,           // i_issue as seq_advance may read it (z486.sv)
     input  logic i_first,
     input  logic i_rni,
     input  logic i_rni_delay,
@@ -287,7 +288,7 @@ assign gate_detect_cond = pe && (uc_buscode == BUSOP_SDEL) &&
                           (desc_raw_hi[11:8] == 4'hC);
 assign gate_detect_now = uc_exec && gate_detect_cond;
 
-assign seq_advance = (((i_issue | uc_exec |
+assign seq_advance = (((i_issue_seq | uc_exec |
                         direct_wb_retire) |
                        (fault_suppress_delay_slot & !stall)) &
                       !halted && !repeat_active);

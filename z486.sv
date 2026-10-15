@@ -425,6 +425,7 @@ wire       q_flush;                 // Flush queue (branch/jump) - combinational
 wire       pe_mode_toggle_now;      // CR0.PE changed this cycle: re-decode next bytes in new mode
 wire       uc_ctl_pref;             // Previous-cycle predecode: current uop is BUSOP_PREF
 wire       early_redirect;
+wire       q_flush_nb;              // q_flush with the branch uStep's redirect taken as 0
 
 // CR0.PE bit of the value being written.
 wire cr0_wr_bit0 = (uc_source == SRC_MDTMP) ? muldiv_result[0] :
@@ -750,6 +751,46 @@ wire       d2_vipt_issue_ready = d2_ready_base &&
 wire       i_issue_reference = (pb_issue_b23 || pb_issue) && d2_ready;
 assign     i_issue = (pb_issue_b23 || pb_issue) &&
                      (d2_vipt_load ? d2_vipt_issue_ready : d2_ready);
+
+// seq_advance (event_control) ORs i_issue with uc_exec, and a branch uStep
+// redirects only while uc_exec is high (hardwired_control.sv
+// `branch_ustep_exec = branch_ustep_rni && uc_exec`), so seq_advance never
+// depends on i_issue in a cycle the redirect is high. It therefore reads
+// i_issue_nb: i_issue with branch_redirect and its q_flush term taken as 0,
+// equal to i_issue whenever the uStep does not redirect. The forwarded flags
+// -> Jcc condition -> branch_redirect -> q_flush (fo ~370) -> i_issue ->
+// seq_advance -> the ROM port-A address path (a 110 MHz C4 path) is gone; the
+// same terms in the same order otherwise (tests/equiv/seq_advance_nb.v; two
+// translate_off fuses hold both premises every cycle).
+wire       pb_issue_nb;
+wire       pb_issue_b23_nb = pb_valid && (i_rni_delay || ~uc_active) &&
+                             ~halted && !q_flush_nb && !fault_suppress_delay_slot &&
+                             !interrupt_entry && !any_fault_issue;
+wire       d2_ready_base_nb = d2_payload_ready && !stall &&
+                              !any_fault_issue &&
+                              !(i_rni && tf_trap_pending && !single_step) &&
+                              !interrupt_at_boundary && !q_flush_nb &&
+                              !d2_vipt_ea_hazard && !ibp_issue_hold;
+wire       d2_ready_nb = d2_ready_base_nb &&
+                         !vipt_load_replay_r.valid && !vipt_load_slow_busy &&
+                         (!d2_vipt_candidate || d2_vipt_load) &&
+                         (!d2_vipt_rmw_candidate || d2_vipt_rmw) &&
+                         (!vipt_load_ex_r.valid || d2_vipt_pipe_ready ||
+                          d2_plain_load_overlap_ready);
+wire       d2_vipt_issue_ready_nb = d2_ready_base_nb &&
+                                    (!vipt_load_ex_r.valid ||
+                                     vipt_load_ex_probed_r);
+wire       i_issue_nb = (pb_issue_b23_nb || pb_issue_nb) &&
+                        (d2_vipt_load ? d2_vipt_issue_ready_nb : d2_ready_nb);
+// synthesis translate_off
+always_ff @(posedge clk) begin
+    if (reset_n && branch_ustep_redirect && !uc_exec)
+        $fatal(1, "SEQ-ADVANCE PREMISE: a branch uStep redirect without uc_exec");
+    if (reset_n && !branch_ustep_redirect && (i_issue_nb !== i_issue))
+        $fatal(1, "SEQ-ADVANCE COFACTOR: i_issue_nb=%b i_issue=%b with no redirect",
+               i_issue_nb, i_issue);
+end
+// synthesis translate_on
 
 // synthesis translate_off
 always_ff @(posedge clk) begin
@@ -1444,6 +1485,7 @@ hardwired_control hardwired_control_inst (
     .mem_commit(recipe_mem_write),
     .shift_commit(recipe_shift_write),
     .q_flush(q_flush),
+    .q_flush_nb(q_flush_nb),
     .interrupt_entry(interrupt_entry),
     .interrupt_pending(interrupt_pending),
     .trap_active(tf_active_r || db_mode_r),
@@ -1468,6 +1510,7 @@ hardwired_control hardwired_control_inst (
     .x87_direct_candidate(x87_direct_candidate),
     .disabled(hardwired_off),
     .pb_issue(pb_issue),
+    .pb_issue_nb(pb_issue_nb),
     .pb_slot(pb_slot),
     .recipe_rni(recipe_rni),
     .recipe_state(recipe_state),
@@ -3000,6 +3043,7 @@ event_control #(.ENABLE_X87(ENABLE_X87)) event_control_inst (
     .q_flush(q_flush),
     .d2_resident(d2_resident),
     .i_issue(i_issue),
+    .i_issue_seq(i_issue_nb),
     .i_first(i_first),
     .i_rni(i_rni),
     .i_rni_delay(i_rni_delay),
@@ -3152,6 +3196,10 @@ end
 // Precise early CALL redirect at i_first; its branch uStep must not flush again.
 assign early_redirect = (branch_ustep_redirect && !early_redirected) || ret_redirect ||
                         early_call_redirect;
+// q_flush's cofactor at branch_ustep_redirect = 0 (equal to q_flush whenever
+// the branch uStep does not redirect); read only by i_issue_nb below.
+assign q_flush_nb = (uc_exec && uc_ctl_pref && !uc_pref_suppress_prev && !early_redirected)
+                  || ret_redirect || early_call_redirect || pe_mode_toggle_now;
 // A fault or interrupt abandons the instruction that owned an early redirect.
 // Clear that ownership before its handler's microcode PREF reaches q_flush.
 always_ff @(posedge clk or negedge reset_n) begin

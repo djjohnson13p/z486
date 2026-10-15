@@ -29,6 +29,7 @@ module hardwired_control
     input  recipe_pending_write_t mem_commit,   // Deferred load GPR write
     input  recipe_pending_write_t shift_commit, // Deferred shift GPR write
     input  logic        q_flush,
+    input  logic        q_flush_nb,        // q_flush with the branch uStep's redirect taken as 0
     input  logic        interrupt_entry,
     input  logic        interrupt_pending,
     input  logic        trap_active,
@@ -54,6 +55,7 @@ module hardwired_control
     output logic        x87_direct_candidate,
     input  logic        disabled,           // fast paths off (Dev menu)
     output logic        pb_issue,         // Issue the skeleton into a dead RNI slot (B1)
+    output logic        pb_issue_nb,      // pb_issue with branch_redirect taken as 0 (see z486 seq_advance)
     output logic        pb_slot,          // ROM port B supplies the next executing word
     output logic        recipe_rni,       // Current recipe uStep contains RNI
     output recipe_state_t recipe_state,  // Latched execution recipe
@@ -385,6 +387,8 @@ assign pb_slot = pb_valid &&
 
 assign pb_issue = pb_dead_slot && pb_b1_ready && (pb_load_slot_r || load_wb_retire ? uc_slot_live : uc_exec) && pb_valid &&
                   !branch_redirect && !any_fault_issue && !q_flush && !stall;
+assign pb_issue_nb = pb_dead_slot && pb_b1_ready && (pb_load_slot_r || load_wb_retire ? uc_slot_live : uc_exec) && pb_valid &&
+                     !any_fault_issue && !q_flush_nb && !stall;
 
 
 //=============================================================================
