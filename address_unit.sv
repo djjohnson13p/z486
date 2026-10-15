@@ -362,10 +362,12 @@ end
 // The address an issuing instruction's first memory access uses: the
 // forwarded ESP for a stack operation, the immediate for moffs, else the
 // ModR/M effective address. The issue edge captures exactly this value.
+// A push's pre-decrement is one 32-bit subtract: a 16-bit stack keeps its low
+// half, which is the wrapped SP.
+wire [31:0] issue_stack_dec = forwarded_esp - (instr.data32 ? 32'd4 : 32'd2);
 wire [31:0] issue_stack_offset = instr.stack_dir
     ? (ss_stack32 ? forwarded_esp : {16'd0, forwarded_esp[15:0]})
-    : (ss_stack32 ? forwarded_esp - (instr.data32 ? 32'd4 : 32'd2)
-                  : {16'd0, forwarded_esp[15:0] - (instr.data32 ? 16'd4 : 16'd2)});
+    : (ss_stack32 ? issue_stack_dec : {16'd0, issue_stack_dec[15:0]});
 assign issue_mem_linear = (instr.stack_op || instr.has_moffs)
                         ? relocate_issue(instr.stack_op ? issue_stack_offset : instr.immediate)
                         : effective_linear;
