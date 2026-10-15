@@ -353,19 +353,6 @@ begin
 end
 endfunction
 
-function automatic [31:0] forward_storeq_slot(
-    input [31:0] value,
-    input        slot_live,
-    input [29:0] slot_addr,
-    input [31:0] slot_data,
-    input  [3:0] slot_be,
-    input [29:0] addr_dw
-);
-begin
-    forward_storeq_slot = (slot_live && slot_addr == addr_dw) ?
-                          merge32(value, slot_data, slot_be) : value;
-end
-endfunction
 
 function automatic [STOREQ_IDX_BITS-1:0] storeq_next_idx(input [STOREQ_IDX_BITS-1:0] idx);
 begin
@@ -546,8 +533,6 @@ wire lookup_wr_open = lookup_store_busy && lookup_wr_room_r &&
 assign cpu_wr_ready = (cpu_ready && !store_patch_busy) || lookup_wr_open;
 wire lookup_wr_accept = cpu_valid && cpu_write && lookup_wr_open;
 wire accept_cpu = (cpu_valid && cpu_ready && can_accept_cpu) || lookup_wr_accept;
-wire [29:0] req_addr_dw = req_addr_r[31:2];
-wire [29:0] fill_addr_dw = {req_addr_r[31:4], fill_count};
 logic [31:0] lookup_forward_data;
 logic [31:0] fill_word_data;
 logic [31:0] bypass_forward_data;
@@ -588,9 +573,32 @@ wire [STOREQ_CNT_BITS-1:0] storeq_count_wr_next =
      storeq_merge_lookup ? (storeq_dequeuing ? storeq_count - 1'b1 : storeq_count)
                          : (storeq_dequeuing ? storeq_count : storeq_count + 1'b1);
 
+// The queued stores' overlay on the word being read: the youngest matching store's
+// bytes per lane, and which lanes any store covers. A lookup reads in S_LOOKUP
+// and a fill word merges in S_FILL, so one overlay (word taken from the request
+// or from the fill beat by state) serves both instead of a compare and a merge
+// chain per reader.
+wire [1:0] sq_fwd_word = (state == S_FILL) ? fill_count : req_addr_r[3:2];
+logic [31:0] sq_ov_data;
+logic [3:0]  sq_ov_be;
 always_comb begin
-    lookup_forward_data = lookup_way_data;
-    fill_word_data = mem_dout;
+    sq_ov_data = 32'd0;
+    sq_ov_be   = 4'd0;
+    // Oldest to youngest, so the youngest matching store's bytes win.
+    for (int k = 0; k < STOREQ_DEPTH; k++) begin
+        if (k < storeq_count &&
+            storeq_valid[storeq_age_idx(storeq_tail, k)] &&
+            storeq_addr[storeq_age_idx(storeq_tail, k)] == {req_addr_r[31:4], sq_fwd_word}) begin
+            sq_ov_data = merge32(sq_ov_data, storeq_data[storeq_age_idx(storeq_tail, k)],
+                                 storeq_be[storeq_age_idx(storeq_tail, k)]);
+            sq_ov_be   = sq_ov_be | storeq_be[storeq_age_idx(storeq_tail, k)];
+        end
+    end
+end
+
+always_comb begin
+    lookup_forward_data = merge32(lookup_way_data, sq_ov_data, sq_ov_be);
+    fill_word_data = merge32(mem_dout, sq_ov_data, sq_ov_be);
     // The uncached read needs no store-queue forwarding: S_LOOKUP launches it only with the
     // queue empty and not draining (`storeq_empty && !storeq_draining`), and the queue is
     // filled only in S_LOOKUP and S_NW_WRITE, so it is still empty for the whole of
@@ -601,8 +609,6 @@ always_comb begin
     // Oldest to youngest, so the youngest matching store's bytes win.
     for (int k = 0; k < STOREQ_DEPTH; k++) begin
         if (k < storeq_count) begin
-            lookup_forward_data = forward_storeq_slot(lookup_forward_data, storeq_valid[storeq_age_idx(storeq_tail, k)], storeq_addr[storeq_age_idx(storeq_tail, k)], storeq_data[storeq_age_idx(storeq_tail, k)], storeq_be[storeq_age_idx(storeq_tail, k)], req_addr_dw);
-            fill_word_data = forward_storeq_slot(fill_word_data, storeq_valid[storeq_age_idx(storeq_tail, k)], storeq_addr[storeq_age_idx(storeq_tail, k)], storeq_data[storeq_age_idx(storeq_tail, k)], storeq_be[storeq_age_idx(storeq_tail, k)], fill_addr_dw);
             wide_line_data = forward_storeq_line_slot(wide_line_data, storeq_valid[storeq_age_idx(storeq_tail, k)], storeq_addr[storeq_age_idx(storeq_tail, k)], storeq_data[storeq_age_idx(storeq_tail, k)], storeq_be[storeq_age_idx(storeq_tail, k)], req_addr_r[31:4]);
         end
     end
