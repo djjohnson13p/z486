@@ -360,13 +360,41 @@ wire [3:0] handoff_lit_size = {1'b0, handoff_work.lit1_size} +
 wire handoff_one_d2 = (handoff_work.lit2_kind == LIT_NONE ||
                        handoff_lit_size <= 4'd4) &&
                       avail_ge(k1q_avail_raw, k1q_avail_lim, {1'b0, handoff_adv});
+// The raw window end is the literal offset plus the literal bytes D2 takes in
+// its first step: (body_len - (lit1 + lit2)) + (fits ? lit1 + lit2 : lit1).
+// The literals are part of the body (body_len >= lit1 + lit2, a fuse below),
+// so that is body_len when both literals fit and body_len - lit2 otherwise,
+// without the literal-offset subtract and the re-add in series on the
+// k1q -> literal sizes -> skel_window_valid_r path.
+// tests/equiv/raw_window_end.v proves it equal to the two-step form under
+// that premise.
+function automatic logic [5:0] raw_window_end(input logic [4:0] body_len,
+                                              input logic [2:0] lit1_size,
+                                              input logic [2:0] lit2_size,
+                                              input logic lit2_none);
+    raw_window_end = (lit2_none || ({1'b0, lit1_size} + {1'b0, lit2_size} <= 4'd4))
+                   ? {1'b0, body_len}
+                   : {1'b0, body_len - {2'b00, lit2_size}};
+endfunction
+wire [5:0] handoff_raw_end = raw_window_end(handoff_work.body_len,
+                                            handoff_work.lit1_size,
+                                            handoff_work.lit2_size,
+                                            handoff_work.lit2_kind == LIT_NONE);
+wire handoff_raw_valid = avail_ge(k1q_avail_raw, k1q_avail_lim, handoff_raw_end);
+// synthesis translate_off
 wire [3:0] handoff_raw_need = (handoff_work.lit2_kind == LIT_NONE ||
                                handoff_lit_size <= 4'd4)
                             ? handoff_lit_size
                             : {1'b0, handoff_work.lit1_size};
-wire [5:0] handoff_raw_end = {1'b0, handoff_raw_lit_off_w} +
-                             {2'b00, handoff_raw_need};
-wire handoff_raw_valid = avail_ge(k1q_avail_raw, k1q_avail_lim, handoff_raw_end);
+always @(posedge clk)
+    if (reset_n && d1_handoff &&
+        (({1'b0, handoff_work.body_len} < {2'b00, handoff_work.lit1_size} +
+                                          {2'b00, handoff_work.lit2_size}) ||
+         (handoff_raw_end != {1'b0, handoff_raw_lit_off_w} + {2'b00, handoff_raw_need})))
+        $fatal(1, "D1: raw window end %0d: body %0d lit1 %0d lit2 %0d",
+               handoff_raw_end, handoff_work.body_len,
+               handoff_work.lit1_size, handoff_work.lit2_size);
+// synthesis translate_on
 // Launch the synchronous ROM as soon as structural decode owns an empty D2.
 // D2 holds the returned word while late or second literals are captured.
 assign d1_issue_direct = d1_handoff && !skel_v;
