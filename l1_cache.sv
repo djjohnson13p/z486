@@ -414,6 +414,30 @@ begin
 end
 endfunction
 
+// The registered store patch is applied to its own way's RAM read before the
+// way mux, so the hit way selects among already patched words instead of the
+// patch decision waiting on the encoded hit way (pmatch: the patch is valid
+// and names this dword). Equal to (pmatch && pway == way) ? pdata
+// : way_data_mux(way, ...) for every input (tests/equiv/way_patch_pick.v).
+function automatic [31:0] way_patch_pick(
+    input [1:0] way,
+    input [31:0] data0,
+    input [31:0] data1,
+    input [31:0] data2,
+    input [31:0] data3,
+    input pmatch,
+    input [1:0] pway,
+    input [31:0] pdata
+);
+begin
+    way_patch_pick = way_data_mux(way,
+        (pmatch && pway == 2'd0) ? pdata : data0,
+        (pmatch && pway == 2'd1) ? pdata : data1,
+        (pmatch && pway == 2'd2) ? pdata : data2,
+        (pmatch && pway == 2'd3) ? pdata : data3);
+end
+endfunction
+
 function automatic [2:0] plru_update(input [2:0] plru, input [1:0] way);
 begin
     case (way)
@@ -456,9 +480,10 @@ reg         patch_fwd_valid_r;
 reg  [1:0]  patch_fwd_way_r;
 reg  [31:0] patch_fwd_data_r;
 reg  [SET_BITS+WORD_OFFSET_BITS-1:0] patch_fwd_addr_r;
-wire patch_fwd_hit = patch_fwd_valid_r && (patch_fwd_way_r == lookup_way) &&
-                     (patch_fwd_addr_r == {req_set_r, req_word_r});
-wire [31:0] lookup_way_data = patch_fwd_hit ? patch_fwd_data_r : lookup_way_ram_data;
+wire patch_fwd_match = patch_fwd_valid_r && (patch_fwd_addr_r == {req_set_r, req_word_r});
+wire patch_fwd_hit = patch_fwd_match && (patch_fwd_way_r == lookup_way);
+wire [31:0] lookup_way_data = way_patch_pick(lookup_way, rd_data0_r, rd_data1_r,
+    rd_data2_r, rd_data3_r, patch_fwd_match, patch_fwd_way_r, patch_fwd_data_r);
 wire [TAG_BITS-1:0] vipt_resolve_tag =
     vipt_resolve_phys_addr[TAG_MSB:TAG_LSB];
 wire [3:0] vipt_hit_vec = {
@@ -473,9 +498,11 @@ wire [31:0] vipt_way_ram_data = way_data_mux(
 // A probe may preread in the cycle a store patches the same dword (the probe
 // shares the read port with a store's S_LOOKUP). Take the registered patch
 // value over the RAM read that raced it; set/word bits are page-offset bits.
-wire vipt_patch_fwd_hit = patch_fwd_valid_r && (patch_fwd_way_r == vipt_hit_way) &&
+wire vipt_patch_fwd_match = patch_fwd_valid_r &&
     (patch_fwd_addr_r == vipt_resolve_phys_addr[SET_MSB:BYTE_OFFSET_BITS]);
-wire [31:0] vipt_way_data = vipt_patch_fwd_hit ? patch_fwd_data_r : vipt_way_ram_data;
+wire vipt_patch_fwd_hit = vipt_patch_fwd_match && (patch_fwd_way_r == vipt_hit_way);
+wire [31:0] vipt_way_data = way_patch_pick(vipt_hit_way, rd_data0_r, rd_data1_r,
+    rd_data2_r, rd_data3_r, vipt_patch_fwd_match, patch_fwd_way_r, patch_fwd_data_r);
 // A younger VIPT lookup may share the preread used to capture an older store
 // to the same word. The store reaches S_LOOKUP while that younger request
 // finalizes, so forward its registered bytes over the RAM's old data.
@@ -654,6 +681,11 @@ end
 always @(posedge clk)
     if (!reset && lookup_wr_accept && !cpu_preread_priority)
         $fatal(1, "L1 pipelined store accepted without preread priority");
+// The per-way patch pick equals the patch decision taken after the way mux.
+always @(posedge clk)
+    if (!reset && ((lookup_way_data != (patch_fwd_hit ? patch_fwd_data_r : lookup_way_ram_data)) ||
+                   (vipt_way_data != (vipt_patch_fwd_hit ? patch_fwd_data_r : vipt_way_ram_data))))
+        $fatal(1, "L1 WAY-PATCH FUSE MISMATCH: lookup=%08x vipt=%08x", lookup_way_data, vipt_way_data);
 // synthesis translate_on
 wire [BRAM_ADDR_BITS-1:0] data_write_addr = data_store_write ?
                                             req_bram_addr :
