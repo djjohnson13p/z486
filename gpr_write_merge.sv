@@ -351,6 +351,10 @@ function automatic logic [31:0] ea_select(input logic [2:0] sel);
     pvs[4] = pv4; pvs[5] = pv5; pvs[6] = pv6; pvs[7] = pv7;
     for (int k = 0; k < 8; k++)
         en[k] = (dst_norm(k) == sel) ? producer_lane(k) : 4'h0;
+    // Producer 4 takes the caller's registered lanes (hit4 in g_reg), so the
+    // delay-slot dst/mode decode stays off the base/index path (the timing cut
+    // that registered lanes_dly); equal to the decode under the HIT4 fuse.
+    en[4] = lanes_dly[sel*4 +: 4];
     ev = cur[sel*32 +: 32];
     for (int bb = 0; bb < 4; bb++) begin
         for (int k = 0; k < 8; k++) begin
