@@ -299,12 +299,20 @@ if (Z486_TEMPLATE_WINDOWS) begin : g_memmap_windows
                                   dcache_req_split_sel ? class_m1 : class_m0;
         // The routing class on each mem_req arm (the pretranslated arm folded
         // in, as in the request), for the bus unit's split launch decision.
+        // The uncached bit is written as the OR of the class bits, which is
+        // `class_r != Z486_CACHE_CACHEABLE` (CACHEABLE is 2'd0): Quartus 17.0
+        // Analysis & Synthesis built the `!=` form here as `!= NO_ALLOC` (the
+        // two classes swapped, DIRECT right) while Verilator, and the same
+        // compare on dcache_req_class below, were right - the bus unit then
+        // launched cacheable RAM accesses as direct ones and cached NO_ALLOC
+        // windows, and the PC-9821 core never reached its BIOS screen.
+        // tests/equiv/cls_uncached_reduce.v proves the two forms equal.
         wire [1:0] class_r1 = dcache_req_pre_sel ? class_pre : class_m1;
         wire [1:0] class_r0 = dcache_req_pre_sel ? class_pre : class_m0;
         assign dcache_req_cls_m1 = {class_r1 == Z486_CACHE_DIRECT,
-                                    dcache_req_route_m1[1] || (class_r1 != Z486_CACHE_CACHEABLE)};
+                                    dcache_req_route_m1[1] || (|class_r1)};
         assign dcache_req_cls_m0 = {class_r0 == Z486_CACHE_DIRECT,
-                                    dcache_req_route_m0[1] || (class_r0 != Z486_CACHE_CACHEABLE)};
+                                    dcache_req_route_m0[1] || (|class_r0)};
         // synthesis translate_off
         // The split's premise (the arms recombine to the request) and its
         // result (the class it replaced), on every cycle of every run.

@@ -51,8 +51,8 @@ module req_route_split #(parameter MUTANT = 0)
                     pretrans_present ? 1'b0 : req_mem_present ? req_is_write : write_r};
   wire [1:0] cr1 = pretrans_present ? c_pre : c_1;
   wire [1:0] cr0 = pretrans_present ? c_pre : c_0;
-  wire [1:0] k1 = {cr1 == 2'd1, rt1[1] || (cr1 != 2'd0)};
-  wire [1:0] k0 = {cr0 == 2'd1, rt0[1] || (cr0 != 2'd0)};
+  wire [1:0] k1 = {cr1 == 2'd1, rt1[1] || (|cr1)};
+  wire [1:0] k0 = {cr0 == 2'd1, rt0[1] || (|cr0)};
   wire [2:0] new_r = mem_req ? route_of(rt1, k1, x87, mmio, drained, idle, held)
                              : route_of(rt0, k0, x87, mmio, drained, idle, held);
   assign mismatch = old_r != new_r;
