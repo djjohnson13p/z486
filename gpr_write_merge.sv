@@ -150,7 +150,15 @@ module gpr_write_merge
     input  logic [2:0]   cap_sel_a,
     input  logic [2:0]   cap_sel_b,
     output logic [31:0]  cap_a_value,
-    output logic [31:0]  cap_b_value
+    output logic [31:0]  cap_b_value,
+
+    // The EA view for two SELECTED registers (the D2 base and index reads),
+    // value-identical to ea_value[sel*32 +: 32] and built the same way as the
+    // capture ports, so an ea_value left unread by the consumer is dropped.
+    input  logic [2:0]   ea_sel_a,
+    input  logic [2:0]   ea_sel_b,
+    output logic [31:0]  ea_a_value,
+    output logic [31:0]  ea_b_value
 );
 
 localparam logic [7:0] VIS_COMMIT = 8'h0F;   // shift, mem, rom, wb
@@ -333,6 +341,30 @@ endfunction
 assign cap_a_value = cap_select(cap_sel_a);
 assign cap_b_value = cap_select(cap_sel_b);
 
+// The EA view's merge for one selected register: the terms of byte_ea below in
+// the same order, with the register comparison folded into each hit.
+function automatic logic [31:0] ea_select(input logic [2:0] sel);
+    logic [3:0] en [8];
+    logic [31:0] ev;
+    logic [31:0] pvs [8];
+    pvs[0] = pv0; pvs[1] = pv1; pvs[2] = pv2; pvs[3] = pv3f;
+    pvs[4] = pv4; pvs[5] = pv5; pvs[6] = pv6; pvs[7] = pv7;
+    for (int k = 0; k < 8; k++)
+        en[k] = (dst_norm(k) == sel) ? producer_lane(k) : 4'h0;
+    ev = cur[sel*32 +: 32];
+    for (int bb = 0; bb < 4; bb++) begin
+        for (int k = 0; k < 8; k++) begin
+            if (vis_ea[k] && producer_valid(k) && en[k][bb] &&
+                !((k == 3) && wb_is_alu))
+                ev[bb*8 +: 8] = pvs[k][bb*8 +: 8];
+        end
+    end
+    ea_select = ev;
+endfunction
+
+assign ea_a_value = ea_select(ea_sel_a);
+assign ea_b_value = ea_select(ea_sel_b);
+
 genvar r, b;
 generate
 for (r = 0; r < 8; r++) begin : g_reg
@@ -512,6 +544,12 @@ always_comb begin : merge_equiv_fuse
         if (ex_value[rr*32 +: 32] !== ref_chain(rr, vis_ex, 1'b1))
             $fatal(1, "GPR MERGE EX VIEW MISMATCH reg %0d: %08x vs chain %08x",
                    rr, ex_value[rr*32 +: 32], ref_chain(rr, vis_ex, 1'b1));
+        if ((rr == int'(ea_sel_a)) && (ea_a_value !== ref_chain(rr, vis_ea, 1'b1)))
+            $fatal(1, "GPR MERGE SELECTED EA A MISMATCH reg %0d: %08x vs chain %08x",
+                   rr, ea_a_value, ref_chain(rr, vis_ea, 1'b1));
+        if ((rr == int'(ea_sel_b)) && (ea_b_value !== ref_chain(rr, vis_ea, 1'b1)))
+            $fatal(1, "GPR MERGE SELECTED EA B MISMATCH reg %0d: %08x vs chain %08x",
+                   rr, ea_b_value, ref_chain(rr, vis_ea, 1'b1));
         if (ea_value[rr*32 +: 32] !== ref_chain(rr, vis_ea, 1'b1))
             $fatal(1, "GPR MERGE EA VIEW MISMATCH reg %0d: %08x vs chain %08x",
                    rr, ea_value[rr*32 +: 32], ref_chain(rr, vis_ea, 1'b1));

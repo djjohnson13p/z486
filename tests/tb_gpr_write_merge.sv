@@ -34,6 +34,8 @@ module tb_gpr_write_merge;
     logic [255:0] ex_value, ea_value, cap_value;
     logic [2:0]   cap_sel_a = 3'd0, cap_sel_b = 3'd0;
     logic [31:0]  cap_a_value, cap_b_value;
+    logic [2:0]   ea_sel_a = 3'd0, ea_sel_b = 3'd0;
+    logic [31:0]  ea_a_value, ea_b_value;
 
     integer failures = 0;
 
@@ -81,7 +83,9 @@ module tb_gpr_write_merge;
         .pulse_value(pulse_value), .pulse_wmask(pulse_wmask),
         .ex_value(ex_value), .ea_value(ea_value), .cap_value(cap_value),
         .cap_sel_a(cap_sel_a), .cap_sel_b(cap_sel_b),
-        .cap_a_value(cap_a_value), .cap_b_value(cap_b_value)
+        .cap_a_value(cap_a_value), .cap_b_value(cap_b_value),
+        .ea_sel_a(ea_sel_a), .ea_sel_b(ea_sel_b),
+        .ea_a_value(ea_a_value), .ea_b_value(ea_b_value)
     );
 
     function automatic [31:0] regval(input [255:0] v, input int r);
@@ -118,9 +122,27 @@ module tb_gpr_write_merge;
     end
     endtask
 
+    // The select-first EA ports (the D2 base and index reads) must equal the full
+    // EA view for every register.
+    task automatic check_ea_select(input string name);
+    begin
+        for (int i = 0; i < 8; i++) begin
+            ea_sel_a = 3'(i);
+            ea_sel_b = 3'(7 - i);
+            #1;
+            if (ea_a_value !== regval(ea_value, i) ||
+                ea_b_value !== regval(ea_value, 7 - i)) begin
+                $display("GPR MERGE FAIL %s: select-first ea reg %0d", name, i);
+                failures = failures + 1;
+            end
+        end
+    end
+    endtask
+
     task automatic check(input string name, input [31:0] got, input [31:0] want);
     begin
         check_cap_select(name);
+        check_ea_select(name);
         if (got !== want) begin
             $display("GPR MERGE FAIL %s: got %08x want %08x", name, got, want);
             failures = failures + 1;

@@ -349,7 +349,6 @@ always @(posedge clk)
 //                             memory token's stale OPR_R
 //   capture view (direct-load base) the EX set plus the shift token and bypass
 wire [31:0] gpr_ex_view [0:7];
-wire [31:0] gpr_ea_view [0:7];
 wire [31:0] gpr_capture_view [0:7];
 
 wire        pr_shift_valid = recipe_shift_write.valid && !recipe_shift_killed;
@@ -397,6 +396,8 @@ logic [255:0] pr_pulse_value, pr_pulse_wmask;
 wire [2:0]  load_capture_widx;
 wire [31:0] load_capture_base;
 wire [31:0] cap_src_value;
+wire [31:0] ea_base_sel_value;
+wire [31:0] ea_index_sel_value;
 
 gpr_write_merge gpr_merge (
     .cur({edi, esi, ebp, esp, ebx, edx, ecx, eax}),
@@ -468,7 +469,13 @@ gpr_write_merge gpr_merge (
     .cap_sel_a(op_size == 2'd0 ? {1'b0, src_reg_sel_r[1:0]} : src_reg_sel_r),
     .cap_sel_b(load_capture_widx),
     .cap_a_value(cap_src_value),
-    .cap_b_value(load_capture_base)
+    .cap_b_value(load_capture_base),
+    // The D2 base and index reads each select ONE register first, so the
+    // full EA view (pr_ea_value) is left to the bench and synthesis drops it.
+    .ea_sel_a(ea_base.index),
+    .ea_sel_b(ea_index.index),
+    .ea_a_value(ea_base_sel_value),
+    .ea_b_value(ea_index_sel_value)
 );
 
 // synthesis translate_off
@@ -495,7 +502,6 @@ genvar gv;
 generate
 for (gv = 0; gv < 8; gv++) begin : g_view
     assign gpr_ex_view[gv]      = pr_ex_value[gv*32 +: 32];
-    assign gpr_ea_view[gv]      = pr_ea_value[gv*32 +: 32];
     assign gpr_capture_view[gv] = pr_cap_value[gv*32 +: 32];
 end
 endgenerate
@@ -595,14 +601,6 @@ function automatic logic [31:0] read_gpr_capture(
         else
             read_gpr_capture = merged;
     end
-endfunction
-
-// A D2 base/index read.
-function automatic logic [31:0] read_ea_gpr(
-    input logic       valid,
-    input logic [2:0] idx
-);
-    read_ea_gpr = valid ? gpr_ea_view[idx] : 32'd0;
 endfunction
 
 // Every direct load captures its destination's prior value before cache data
@@ -895,8 +893,8 @@ always_comb begin
                                                      source_value_live);
     protection_source_low16_nonzero = |protection_source_value[15:0];
     cs_source_value = read_cs_source(source_live, source_value_live);
-    ea_base_value = read_ea_gpr(ea_base.valid, ea_base.index);
-    ea_index_value = read_ea_gpr(ea_index.valid, ea_index.index);
+    ea_base_value = ea_base.valid ? ea_base_sel_value : 32'd0;
+    ea_index_value = ea_index.valid ? ea_index_sel_value : 32'd0;
 end
 
 // synthesis translate_off
