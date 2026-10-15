@@ -1290,6 +1290,63 @@ always_ff @(posedge clk) begin
 end
 // synthesis translate_on
 
+// The microcode destination's architectural register write, decoded once into
+// one register selector, size and value so the register file has a single
+// write port to merge (a destination names at most one register).
+logic        gpr_wr_en;
+logic [2:0]  gpr_wr_sel;
+logic [1:0]  gpr_wr_size;
+logic [31:0] gpr_wr_data;
+always_comb begin
+    gpr_wr_en   = 1'b1;
+    gpr_wr_sel  = 3'd0;
+    gpr_wr_size = 2'd2;
+    gpr_wr_data = dest_value;
+    case (dest)
+        DEST_EAX:    gpr_wr_sel = 3'd0;
+        DEST_EDX:    gpr_wr_sel = 3'd2;
+        DEST_ESP:    gpr_wr_sel = 3'd4;
+        DEST_eSP: begin
+            gpr_wr_sel = 3'd4;
+            if (!(pe && stack32))
+                gpr_wr_size = 2'd1;
+        end
+        DEST_EBP:    gpr_wr_sel = 3'd5;
+        DEST_DSTREG: begin gpr_wr_sel = dst_reg_sel_r; gpr_wr_size = op_size; end
+        DEST_SRCREG: begin gpr_wr_sel = src_reg_sel_r; gpr_wr_size = op_size; end
+        DEST_AX:     begin gpr_wr_sel = 3'd0; gpr_wr_size = 2'd1; end
+        DEST_BP:     begin gpr_wr_sel = 3'd5; gpr_wr_size = 2'd1; end
+        DEST_eAX_AL: begin gpr_wr_sel = 3'd0; gpr_wr_size = op_size; end
+        DEST_eDX_AH: begin gpr_wr_sel = (op_size == 2'd0) ? 3'd4 : 3'd2;
+                           gpr_wr_size = op_size; end
+        DEST_eCX:    begin gpr_wr_sel = 3'd1; gpr_wr_size = instr.addr32 ? 2'd2 : 2'd1; end
+        DEST_eSI:    begin gpr_wr_sel = 3'd6; gpr_wr_size = instr.addr32 ? 2'd2 : 2'd1; end
+        DEST_eDI:    begin gpr_wr_sel = 3'd7; gpr_wr_size = instr.addr32 ? 2'd2 : 2'd1; end
+        DEST_AL:     begin gpr_wr_sel = 3'd0; gpr_wr_size = 2'd0; end
+        DEST_AH:     begin gpr_wr_sel = 3'd4; gpr_wr_size = 2'd0; end
+        DEST_USTEP_BSWAP: begin
+            gpr_wr_sel  = src_reg_sel_r;
+            gpr_wr_data = {dest_value[7:0], dest_value[15:8],
+                           dest_value[23:16], dest_value[31:24]};
+        end
+        // The ALU result lands in the recipe's destination register.
+        DEST_USTEP_ALU: begin
+            gpr_wr_en   = recipe_state.hardwired && !recipe_commit_cancel;
+            gpr_wr_sel  = dst_reg_sel_r;
+            gpr_wr_size = op_size;
+            gpr_wr_data = alu_result;
+        end
+        // POPA/POPAD discard the popped ESP slot (their eSP words set the
+        // pointer); a task switch's IRF loads do write ESP.
+        DEST_IRF: begin
+            gpr_wr_en   = irf_writes_gpr(countr, instr.has_0f, instr.opcode);
+            gpr_wr_sel  = countr[2:0];
+            gpr_wr_size = is_dword ? 2'd2 : 2'd1;
+        end
+        default:     gpr_wr_en = 1'b0;
+    endcase
+end
+
 // All GPR producers retain their original ordering. Later assignments are
 // younger and therefore win when two producers target the same register.
 always_ff @(posedge clk) begin
@@ -1311,48 +1368,8 @@ always_ff @(posedge clk) begin
             commit_merged(pr_commit_value, pr_commit_wmask);
 
         if (exec) begin
-            case (dest)
-                DEST_EAX: eax <= dest_value;
-                DEST_EDX: edx <= dest_value;
-                DEST_ESP: esp <= dest_value;
-                DEST_eSP:
-                    if (pe && stack32)
-                        esp <= dest_value;
-                    else
-                        esp[15:0] <= dest_value[15:0];
-                DEST_EBP: ebp <= dest_value;
-
-                DEST_DSTREG: write_gpr(dst_reg_sel_r, dest_value, op_size);
-                DEST_SRCREG: write_gpr(src_reg_sel_r, dest_value, op_size);
-                DEST_AX:     write_gpr(3'd0, dest_value, 2'd1);
-                DEST_BP:     write_gpr(3'd5, dest_value, 2'd1);
-                DEST_eAX_AL: write_gpr(3'd0, dest_value, op_size);
-                DEST_eDX_AH: write_gpr(op_size == 2'd0 ? 3'd4 : 3'd2,
-                                       dest_value, op_size);
-                DEST_eCX: write_gpr(3'd1, dest_value, instr.addr32 ? 2'd2 : 2'd1);
-                DEST_eSI: write_gpr(3'd6, dest_value, instr.addr32 ? 2'd2 : 2'd1);
-                DEST_eDI: write_gpr(3'd7, dest_value, instr.addr32 ? 2'd2 : 2'd1);
-                DEST_AL:  write_gpr(3'd0, dest_value, 2'd0);
-                DEST_AH:  write_gpr(3'd4, dest_value, 2'd0);
-
-                DEST_USTEP_BSWAP:
-                    write_gpr(src_reg_sel_r,
-                              {dest_value[7:0], dest_value[15:8],
-                               dest_value[23:16], dest_value[31:24]}, 2'd2);
-
-                DEST_USTEP_ALU:
-                    if (recipe_state.hardwired &&
-                        !recipe_commit_cancel)
-                        write_gpr(dst_reg_sel_r, alu_result, op_size);
-
-                // POPA/POPAD discard the popped ESP slot (their eSP words set
-                // the pointer); a task switch's IRF loads do write ESP.
-                DEST_IRF:
-                    if (irf_writes_gpr(countr, instr.has_0f, instr.opcode))
-                        write_gpr(countr[2:0], dest_value,
-                                  is_dword ? 2'd2 : 2'd1);
-                default: ;
-            endcase
+            if (gpr_wr_en)
+                write_gpr(gpr_wr_sel, gpr_wr_data, gpr_wr_size);
 
             // REP STOS records its restartable count only after the element
             // store has cleared DLY. The loop can then bypass its redundant
