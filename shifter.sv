@@ -29,9 +29,19 @@ module shifter
 
     input  logic [31:0] alu_dst,
     input  logic [31:0] alu_src,
+    // The GPR operands, each read at one fixed size: op_size (the registered
+    // decode) and shift1_size (the size SHIFT1 captured).  The former
+    // gpr_*_shift_size reads used data_size = use_captured ? shift1_size :
+    // op_size, which put use_captured and op_size_du in front of the size
+    // format of the 8:1 view read; the operand muxes below now take the size
+    // arm by use_captured last (C3: q_shift_use_captured_r / op_size_du ->
+    // data_size -> Equal -> view format -> shifter).
+    // tests/equiv/shift_operand_size_split.v proves both forms equal.
     input  logic [31:0] gpr_src_op_size,
-    input  logic [31:0] gpr_dst_shift_size,
-    input  logic [31:0] gpr_src_shift_size,
+    input  logic [31:0] gpr_dst_op_size,
+    input  logic [31:0] gpr_dst_s1_size,
+    input  logic [31:0] gpr_src_s1_size,
+    output logic [1:0]  shift1_size_o,
     input  logic [31:0] immediate,
     input  logic [31:0] ecx,
     input  logic [31:0] sigma,
@@ -92,6 +102,14 @@ wire [31:0] width_mask = op_size == 2'd0 ? 32'h0000_00ff :
                          op_size == 2'd1 ? 32'h0000_ffff : 32'hffff_ffff;
 
 assign data_size = use_captured_source ? shift1_size : op_size;
+assign shift1_size_o = shift1_size;
+// A GPR operand at data_size: the read at shift1_size when the captured size
+// is in use, else the read at op_size (data_size's own two arms).
+function automatic logic [31:0] shift_operand_at_size(input logic use_cap,
+                                                      input logic [31:0] at_s1,
+                                                      input logic [31:0] at_op);
+    shift_operand_at_size = use_cap ? at_s1 : at_op;
+endfunction
 assign count_nonzero = count_raw_r != 5'd0;
 
 always_ff @(posedge clk) begin
@@ -119,7 +137,9 @@ always_comb begin
             4'd1:    source_value = sigma;
             // The only DSTREG source sites are BITTST, whose operand width is
             // the same width already selected for the shifter ALU operand.
-            4'd2:    source_value = gpr_dst_shift_size;
+            // Under !use_captured_source data_size is op_size, so the
+            // DSTREG operand is the op_size read.
+            4'd2:    source_value = gpr_dst_op_size;
             4'd4:    source_value = immediate;
             4'd5:    source_value = tmpb;
             4'd6:    source_value = tmpc;
@@ -158,8 +178,10 @@ always_comb begin
         ALUSRC_TMPC:         alu_value = tmpc;
         ALUSRC_TMPD:         alu_value = tmpd;
         ALUSRC_TMPB:         alu_value = tmpb;
-        ALUSRC_DSTREG:       alu_value = gpr_dst_shift_size;
-        ALUSRC_SRCREG:       alu_value = gpr_src_shift_size;
+        ALUSRC_DSTREG:       alu_value = shift_operand_at_size(use_captured_source,
+                                                               gpr_dst_s1_size, gpr_dst_op_size);
+        ALUSRC_SRCREG:       alu_value = shift_operand_at_size(use_captured_source,
+                                                               gpr_src_s1_size, gpr_src_op_size);
         ALUSRC_ECX:          alu_value = ecx;
         ALUSRC_IMM:          alu_value = immediate;
         ALUSRC_BITS_V:       alu_value = data_size == 2'd0 ? 32'd7 :
@@ -422,7 +444,8 @@ always_comb begin
         2'd0:    shift2_live_reference = tmpc;
         2'd1:    shift2_live_reference = tmpe;
         2'd2:    shift2_live_reference = sigma;
-        2'd3:    shift2_live_reference = gpr_src_shift_size;
+        // SHIFT2 executes with use_captured_source set: data_size is shift1_size.
+        2'd3:    shift2_live_reference = gpr_src_s1_size;
         default: shift2_live_reference = 32'd0;
     endcase
 end

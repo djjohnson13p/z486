@@ -218,6 +218,7 @@ end
 
 logic [31:0] shift_setup_result;
 logic [1:0]  shift_data_size;
+logic [1:0]  shift1_size;            // the shifter's captured SHIFT1 size
 logic        shift_count_nonzero;
 logic        shift_bit_test_cf;
 
@@ -399,6 +400,10 @@ wire [31:0] load_capture_base;
 wire [31:0] cap_src_value;
 wire [31:0] ea_base_sel_value;
 wire [31:0] ea_index_sel_value;
+// The EX view of the dynamically selected registers (gpr_merge ex_*): the
+// DSTREG and SRCREG registers and their byte-pair registers ({0, sel[1:0]},
+// whose bytes 0/1 are AL..BL / AH..BH), and the IRF register countr[2:0].
+wire [31:0] ex_dst_full, ex_dst_byte, ex_src_full, ex_src_byte, ex_irf_full;
 
 gpr_write_merge gpr_merge (
     .cur({edi, esi, ebp, esp, ebx, edx, ecx, eax}),
@@ -476,7 +481,19 @@ gpr_write_merge gpr_merge (
     .ea_sel_a(ea_base.index),
     .ea_sel_b(ea_index.index),
     .ea_a_value(ea_base_sel_value),
-    .ea_b_value(ea_index_sel_value)
+    .ea_b_value(ea_index_sel_value),
+    // The dynamic EX operand reads each select their register first (see
+    // read_gpr_fmt below): DSTREG full/byte-pair, SRCREG full/byte-pair, IRF.
+    .ex_sel_a(dst_reg_sel_r),
+    .ex_sel_b({1'b0, dst_reg_sel_r[1:0]}),
+    .ex_sel_c(src_reg_sel_r),
+    .ex_sel_d({1'b0, src_reg_sel_r[1:0]}),
+    .ex_sel_e(countr[2:0]),
+    .ex_a_value(ex_dst_full),
+    .ex_b_value(ex_dst_byte),
+    .ex_c_value(ex_src_full),
+    .ex_d_value(ex_src_byte),
+    .ex_e_value(ex_irf_full)
 );
 
 // synthesis translate_off
@@ -570,6 +587,41 @@ function automatic logic [31:0] read_gpr_load_forwarded(
 );
     read_gpr_load_forwarded = read_gpr_load_forwarded_late(reg_sel, size);
 endfunction
+
+// read_gpr_load_forwarded_late / _op for a register whose EX view was selected
+// first (gpr_merge ex_*): full = view[reg_sel], bsrc = view[{0, reg_sel[1:0]}],
+// hi = reg_sel[2].  The same format, so read_gpr_fmt(view[sel],
+// view[{0,sel[1:0]}], sel[2], size) == read_gpr_load_forwarded_late(sel, size)
+// (tests/equiv/ex_select_fmt.v; the selected values are fused against the view).
+function automatic logic [31:0] read_gpr_fmt(input logic [31:0] full, input logic [31:0] bsrc,
+                                             input logic hi, input logic [1:0] size);
+    logic [7:0] byte_val;
+    begin
+        byte_val = hi ? bsrc[15:8] : bsrc[7:0];
+        read_gpr_fmt = (size == 2'd0) ? {24'd0, byte_val} :
+                       (size == 2'd1) ? {16'd0, full[15:0]} :
+                                        full;
+    end
+endfunction
+function automatic logic [31:0] read_gpr_fmt_op(input logic [31:0] full, input logic [31:0] bsrc,
+                                                input logic hi);
+    logic [7:0] byte_val;
+    begin
+        byte_val = hi ? bsrc[15:8] : bsrc[7:0];
+        read_gpr_fmt_op = op_size_is0 ? {24'd0, byte_val} :
+                          op_size_is1 ? {16'd0, full[15:0]} :
+                                        full;
+    end
+endfunction
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && ((ex_dst_full !== gpr_ex_view[dst_reg_sel_r]) ||
+                    (ex_dst_byte !== gpr_ex_view[{1'b0, dst_reg_sel_r[1:0]}]) ||
+                    (ex_src_full !== gpr_ex_view[src_reg_sel_r]) ||
+                    (ex_src_byte !== gpr_ex_view[{1'b0, src_reg_sel_r[1:0]}]) ||
+                    (ex_irf_full !== gpr_ex_view[countr[2:0]])))
+        $fatal(1, "data_unit: a selected EX read disagrees with the EX view");
+// synthesis translate_on
 
 
 // Every late GPR write landing on this edge (any direct-load WB included).
@@ -692,8 +744,8 @@ function automatic logic [31:0] read_alu_source(input logic [5:0] field);
             (op_size == 2'd0 ? 32'd1 : op_size == 2'd1 ? 32'd2 : 32'd4);
         ALUSRC_BITS_V: read_alu_source = op_size == 2'd0 ? 32'd7 :
                                           op_size == 2'd2 ? 32'd31 : 32'd15;
-        ALUSRC_DSTREG: read_alu_source = read_gpr_load_forwarded_op(dst_reg_sel_r);
-        ALUSRC_SRCREG: read_alu_source = read_gpr_load_forwarded_op(src_reg_sel_r);
+        ALUSRC_DSTREG: read_alu_source = read_gpr_fmt_op(ex_dst_full, ex_dst_byte, dst_reg_sel_r[2]);
+        ALUSRC_SRCREG: read_alu_source = read_gpr_fmt_op(ex_src_full, ex_src_byte, src_reg_sel_r[2]);
         ALUSRC_ZERO: read_alu_source = 32'd0;
         default: read_alu_source = 32'd0;
     endcase
@@ -792,12 +844,14 @@ function automatic logic [31:0] read_factored_gpr_source(
             3'd0, op_size_src);
         SRC_eDX_AH: read_factored_gpr_source = read_gpr_load_forwarded(
             op_size_src == 2'd0 ? 3'd4 : 3'd2, op_size_src);
-        SRC_IRF: read_factored_gpr_source = read_gpr_load_forwarded(
-            countr[2:0], op_size_src == 2'd2 ? 2'd2 : 2'd1);
-        SRC_DSTREG: read_factored_gpr_source = read_gpr_load_forwarded(
-            dst_reg_sel_r, srcreg_size_src);
-        SRC_SRCREG: read_factored_gpr_source = read_gpr_load_forwarded(
-            src_reg_sel_r, op_size_src);
+        // The IRF read is a word or dword (never the byte arm), so the full
+        // register stands in for the byte-pair source.
+        SRC_IRF: read_factored_gpr_source = read_gpr_fmt(
+            ex_irf_full, ex_irf_full, countr[2], op_size_src == 2'd2 ? 2'd2 : 2'd1);
+        SRC_DSTREG: read_factored_gpr_source = read_gpr_fmt(
+            ex_dst_full, ex_dst_byte, dst_reg_sel_r[2], srcreg_size_src);
+        SRC_SRCREG: read_factored_gpr_source = read_gpr_fmt(
+            ex_src_full, ex_src_byte, src_reg_sel_r[2], op_size_src);
         default: read_factored_gpr_source = 32'd0;
     endcase
 endfunction
@@ -871,8 +925,8 @@ function automatic logic [31:0] read_memory_write_source(input logic [5:0] field
                 default: read_memory_write_source = 32'd0;
             endcase
         end
-        SRC_IRF: read_memory_write_source = read_gpr_load_forwarded(
-            countr[2:0], op_size_src == 2'd2 ? 2'd2 : 2'd1);
+        SRC_IRF: read_memory_write_source = read_gpr_fmt(
+            ex_irf_full, ex_irf_full, countr[2], op_size_src == 2'd2 ? 2'd2 : 2'd1);
         default: read_memory_write_source = 32'd0;
     endcase
 endfunction
@@ -1973,9 +2027,11 @@ shifter shifter_inst (
     .op_size(op_size),
     .alu_dst(alu_dst),
     .alu_src(alu_src),
-    .gpr_src_op_size(read_gpr_load_forwarded_op(src_reg_sel_r)),
-    .gpr_dst_shift_size(read_gpr_load_forwarded_late(dst_reg_sel_r, shift_data_size)),
-    .gpr_src_shift_size(read_gpr_load_forwarded(src_reg_sel_r, shift_data_size)),
+    .gpr_src_op_size(read_gpr_fmt_op(ex_src_full, ex_src_byte, src_reg_sel_r[2])),
+    .gpr_dst_op_size(read_gpr_fmt_op(ex_dst_full, ex_dst_byte, dst_reg_sel_r[2])),
+    .gpr_dst_s1_size(read_gpr_fmt(ex_dst_full, ex_dst_byte, dst_reg_sel_r[2], shift1_size)),
+    .gpr_src_s1_size(read_gpr_fmt(ex_src_full, ex_src_byte, src_reg_sel_r[2], shift1_size)),
+    .shift1_size_o(shift1_size),
     .immediate(instr.immediate),
     .ecx(read_gpr_load_forwarded(3'd1, 2'd2)),
     .sigma(sigma),

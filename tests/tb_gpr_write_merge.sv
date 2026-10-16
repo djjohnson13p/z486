@@ -36,6 +36,8 @@ module tb_gpr_write_merge;
     logic [31:0]  cap_a_value, cap_b_value;
     logic [2:0]   ea_sel_a = 3'd0, ea_sel_b = 3'd0;
     logic [31:0]  ea_a_value, ea_b_value;
+    logic [2:0]   ex_sel_a = 3'd0, ex_sel_b = 3'd0, ex_sel_c = 3'd0, ex_sel_d = 3'd0, ex_sel_e = 3'd0;
+    logic [31:0]  ex_a_value, ex_b_value, ex_c_value, ex_d_value, ex_e_value;
 
     integer failures = 0;
 
@@ -85,7 +87,11 @@ module tb_gpr_write_merge;
         .cap_sel_a(cap_sel_a), .cap_sel_b(cap_sel_b),
         .cap_a_value(cap_a_value), .cap_b_value(cap_b_value),
         .ea_sel_a(ea_sel_a), .ea_sel_b(ea_sel_b),
-        .ea_a_value(ea_a_value), .ea_b_value(ea_b_value)
+        .ea_a_value(ea_a_value), .ea_b_value(ea_b_value),
+        .ex_sel_a(ex_sel_a), .ex_sel_b(ex_sel_b), .ex_sel_c(ex_sel_c), .ex_sel_d(ex_sel_d),
+        .ex_sel_e(ex_sel_e),
+        .ex_a_value(ex_a_value), .ex_b_value(ex_b_value), .ex_c_value(ex_c_value),
+        .ex_d_value(ex_d_value), .ex_e_value(ex_e_value)
     );
 
     function automatic [31:0] regval(input [255:0] v, input int r);
@@ -123,13 +129,22 @@ module tb_gpr_write_merge;
     endtask
 
     // The select-first EA ports (the D2 base and index reads) must equal the full
-    // EA view for every register.
+    // EA view for every register, and the five select-first EX ports the EX view.
     task automatic check_ea_select(input string name);
     begin
         for (int i = 0; i < 8; i++) begin
             ea_sel_a = 3'(i);
             ea_sel_b = 3'(7 - i);
+            ex_sel_a = 3'(i); ex_sel_b = 3'(7 - i); ex_sel_c = 3'((i + 3) % 8);
+            ex_sel_d = 3'((i + 5) % 8); ex_sel_e = 3'((i + 1) % 8);
             #1;
+            if (ex_a_value !== regval(ex_value, i) || ex_b_value !== regval(ex_value, 7 - i) ||
+                ex_c_value !== regval(ex_value, (i + 3) % 8) ||
+                ex_d_value !== regval(ex_value, (i + 5) % 8) ||
+                ex_e_value !== regval(ex_value, (i + 1) % 8)) begin
+                $display("GPR MERGE FAIL %s: select-first ex reg %0d", name, i);
+                failures = failures + 1;
+            end
             if (ea_a_value !== regval(ea_value, i) ||
                 ea_b_value !== regval(ea_value, 7 - i)) begin
                 $display("GPR MERGE FAIL %s: select-first ea reg %0d", name, i);

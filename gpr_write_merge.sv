@@ -158,7 +158,26 @@ module gpr_write_merge
     input  logic [2:0]   ea_sel_a,
     input  logic [2:0]   ea_sel_b,
     output logic [31:0]  ea_a_value,
-    output logic [31:0]  ea_b_value
+    output logic [31:0]  ea_b_value,
+
+    // The EX view for five SELECTED registers (data_unit's dynamic operand
+    // reads: the DSTREG/SRCREG full and byte-pair registers and the IRF
+    // register), value-identical to ex_value[sel*32 +: 32] but merged after
+    // the register is chosen, so a late producer (the load write-back's
+    // vipt_load_wb_data_r, OPR_R) passes one merge LUT instead of the
+    // per-register merge followed by the 8:1 register mux (C4/C4x: pv3f ->
+    // ex_value -> Mux -> byte format -> shifter/ALU).  The hits are the
+    // caller's registered ones indexed by the select, like ea_select's lanes.
+    input  logic [2:0]   ex_sel_a,
+    input  logic [2:0]   ex_sel_b,
+    input  logic [2:0]   ex_sel_c,
+    input  logic [2:0]   ex_sel_d,
+    input  logic [2:0]   ex_sel_e,
+    output logic [31:0]  ex_a_value,
+    output logic [31:0]  ex_b_value,
+    output logic [31:0]  ex_c_value,
+    output logic [31:0]  ex_d_value,
+    output logic [31:0]  ex_e_value
 );
 
 localparam logic [7:0] VIS_COMMIT = 8'h0F;   // shift, mem, rom, wb
@@ -369,6 +388,44 @@ endfunction
 assign ea_a_value = ea_select(ea_sel_a);
 assign ea_b_value = ea_select(ea_sel_b);
 
+// The EX view's merge for one selected register: the terms of byte_ex below in
+// the same order, each hit the per-register one byte_ex uses (the registered
+// hit_shift / hit_mem / hitv3_wb / lanes_dly bits, the decoded rest) indexed
+// by sel.
+function automatic logic [31:0] ex_select(input logic [2:0] sel);
+    logic [3:0] en [8];
+    logic [3:0] hv [8];
+    logic [31:0] xv;
+    logic [31:0] pvs [8];
+    pvs[0] = pv0; pvs[1] = pv1; pvs[2] = pv2; pvs[3] = pv3f;
+    pvs[4] = pv4; pvs[5] = pv5; pvs[6] = pv6; pvs[7] = pv7;
+    for (int k = 0; k < 8; k++)
+        en[k] = (dst_norm(k) == sel) ? producer_lane(k) : 4'h0;
+    hv[0] = hit_shift[sel*4 +: 4];
+    hv[1] = hit_mem[sel*4 +: 4];
+    hv[2] = v_rom ? en[2] : 4'h0;
+    hv[3] = hitv3_wb[sel*4 +: 4];
+    hv[4] = v_dly ? lanes_dly[sel*4 +: 4] : 4'h0;
+    hv[5] = v_stos ? en[5] : 4'h0;
+    hv[6] = v_sigsrc ? en[6] : 4'h0;
+    hv[7] = v_esp ? en[7] : 4'h0;
+    xv = cur[sel*32 +: 32];
+    for (int bb = 0; bb < 4; bb++) begin
+        // lowest priority first, so a later (younger, higher-priority) hit wins
+        for (int k = 0; k < 8; k++) begin
+            if (vis_ex[k] && hv[k][bb])
+                xv[bb*8 +: 8] = pvs[k][bb*8 +: 8];
+        end
+    end
+    ex_select = xv;
+endfunction
+
+assign ex_a_value = ex_select(ex_sel_a);
+assign ex_b_value = ex_select(ex_sel_b);
+assign ex_c_value = ex_select(ex_sel_c);
+assign ex_d_value = ex_select(ex_sel_d);
+assign ex_e_value = ex_select(ex_sel_e);
+
 genvar r, b;
 generate
 for (r = 0; r < 8; r++) begin : g_reg
@@ -554,6 +611,21 @@ always_comb begin : merge_equiv_fuse
         if ((rr == int'(ea_sel_b)) && (ea_b_value !== ref_chain(rr, vis_ea, 1'b1)))
             $fatal(1, "GPR MERGE SELECTED EA B MISMATCH reg %0d: %08x vs chain %08x",
                    rr, ea_b_value, ref_chain(rr, vis_ea, 1'b1));
+        if ((rr == int'(ex_sel_a)) && (ex_a_value !== ex_value[rr*32 +: 32]))
+            $fatal(1, "GPR MERGE SELECTED EX A MISMATCH reg %0d: %08x vs view %08x",
+                   rr, ex_a_value, ex_value[rr*32 +: 32]);
+        if ((rr == int'(ex_sel_b)) && (ex_b_value !== ex_value[rr*32 +: 32]))
+            $fatal(1, "GPR MERGE SELECTED EX B MISMATCH reg %0d: %08x vs view %08x",
+                   rr, ex_b_value, ex_value[rr*32 +: 32]);
+        if ((rr == int'(ex_sel_c)) && (ex_c_value !== ex_value[rr*32 +: 32]))
+            $fatal(1, "GPR MERGE SELECTED EX C MISMATCH reg %0d: %08x vs view %08x",
+                   rr, ex_c_value, ex_value[rr*32 +: 32]);
+        if ((rr == int'(ex_sel_d)) && (ex_d_value !== ex_value[rr*32 +: 32]))
+            $fatal(1, "GPR MERGE SELECTED EX D MISMATCH reg %0d: %08x vs view %08x",
+                   rr, ex_d_value, ex_value[rr*32 +: 32]);
+        if ((rr == int'(ex_sel_e)) && (ex_e_value !== ex_value[rr*32 +: 32]))
+            $fatal(1, "GPR MERGE SELECTED EX E MISMATCH reg %0d: %08x vs view %08x",
+                   rr, ex_e_value, ex_value[rr*32 +: 32]);
         if (ea_value[rr*32 +: 32] !== ref_chain(rr, vis_ea, 1'b1))
             $fatal(1, "GPR MERGE EA VIEW MISMATCH reg %0d: %08x vs chain %08x",
                    rr, ea_value[rr*32 +: 32], ref_chain(rr, vis_ea, 1'b1));
