@@ -1121,6 +1121,15 @@ memory #(
 );
 
 // Prefetch Unit: 16-byte circular buffer
+// synthesis translate_off
+// pf_rdata (the icache's cpu_line) is a defined line only in an icache
+// completion cycle; l1_icache selects it by resp_valid_r on that contract.
+// Every prefetcher consumer that keeps the line as valid state (the queue fill,
+// the spec buffer seed) must sample it in such a cycle.
+always @(posedge clk)
+    if (reset_n && (prefetch_inst.good_ack || prefetch_inst.spec_data_now) && !icache_req_complete)
+        $fatal(1, "z486: the prefetcher consumed pf_rdata without an icache completion");
+// synthesis translate_on
 prefetch prefetch_inst (
     .clk(clk),
     .reset_n(reset_n),

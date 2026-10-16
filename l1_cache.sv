@@ -361,6 +361,52 @@ end
 endfunction
 
 // Slot holding the k-th oldest entry.
+// Physical slot p's age (0 = oldest = tail) is (p - tail) mod depth; the slot is
+// live in the overlay when its age is below the count.
+function automatic logic sq_slot_live(input [STOREQ_IDX_BITS-1:0] tail,
+                                      input [STOREQ_CNT_BITS-1:0] count, input integer p);
+    integer age;
+begin
+    age = p - tail;
+    if (age < 0) age = age + STOREQ_DEPTH;
+    sq_slot_live = age < count;
+end
+endfunction
+
+// The store-queue overlay from per-slot hits: per byte lane, the youngest
+// hitting slot whose byte enable covers it (slot q is younger than p when its
+// age is larger), and the lanes any hit covers.  Returns {be, data}; data lanes
+// outside be are zero.
+function automatic [35:0] sq_overlay_pick(input [STOREQ_DEPTH-1:0] hit,
+                                          input [STOREQ_IDX_BITS-1:0] tail,
+                                          input [32*STOREQ_DEPTH-1:0] data,
+                                          input [4*STOREQ_DEPTH-1:0] be);
+    logic [31:0] d;
+    logic [3:0]  bo;
+    logic        cov_p, younger_cov;
+    integer      ap, aq;
+begin
+    d = 32'd0;
+    bo = 4'd0;
+    for (int b = 0; b < 4; b++) begin
+        for (int p = 0; p < STOREQ_DEPTH; p++) begin
+            ap = p - tail; if (ap < 0) ap = ap + STOREQ_DEPTH;
+            cov_p = hit[p] && be[p*4 + b];
+            younger_cov = 1'b0;
+            for (int q = 0; q < STOREQ_DEPTH; q++) begin
+                aq = q - tail; if (aq < 0) aq = aq + STOREQ_DEPTH;
+                if ((aq > ap) && hit[q] && be[q*4 + b])
+                    younger_cov = 1'b1;
+            end
+            if (cov_p && !younger_cov)
+                d[b*8 +: 8] = d[b*8 +: 8] | data[p*32 + b*8 +: 8];
+            bo[b] = bo[b] | cov_p;
+        end
+    end
+    sq_overlay_pick = {bo, d};
+end
+endfunction
+
 function automatic [STOREQ_IDX_BITS-1:0] storeq_age_idx(
     input [STOREQ_IDX_BITS-1:0] tail, input integer k);
     integer i;
@@ -581,20 +627,50 @@ wire [STOREQ_CNT_BITS-1:0] storeq_count_wr_next =
 wire [1:0] sq_fwd_word = (state == S_FILL) ? fill_count : req_addr_r[3:2];
 logic [31:0] sq_ov_data;
 logic [3:0]  sq_ov_be;
+// The overlay in physical-slot order: each slot's address is compared with the
+// word directly (no tail-rotated mux in front of the 30-bit compare), its age
+// guard (k < storeq_count, k = the slot's age) and the youngest-wins
+// precedence are functions of the registered tail and count only, and each
+// byte lane takes the one winning slot's byte (an AND-OR, not a chain of
+// merges).  The fitted path was storeq_tail -> tail + k -> slot mux -> address
+// compare -> four chained merges -> normal_rdata -> OPR_R.  Equal to the
+// age-ordered chain (kept below as the reference, fused) for every input:
+// tests/equiv/sq_overlay_phys.v pastes sq_overlay_pick and sq_slot_live.
+logic [STOREQ_DEPTH-1:0] sq_slot_hit;
+logic [32*STOREQ_DEPTH-1:0] sq_data_flat;
+logic [4*STOREQ_DEPTH-1:0]  sq_be_flat;
 always_comb begin
-    sq_ov_data = 32'd0;
-    sq_ov_be   = 4'd0;
+    for (int p = 0; p < STOREQ_DEPTH; p++) begin
+        sq_data_flat[p*32 +: 32] = storeq_data[p];
+        sq_be_flat[p*4 +: 4]     = storeq_be[p];
+    end
+    for (int p = 0; p < STOREQ_DEPTH; p++)
+        sq_slot_hit[p] = sq_slot_live(storeq_tail, storeq_count, p) && storeq_valid[p] &&
+                         (storeq_addr[p] == {req_addr_r[31:4], sq_fwd_word});
+    {sq_ov_be, sq_ov_data} = sq_overlay_pick(sq_slot_hit, storeq_tail, sq_data_flat, sq_be_flat);
+end
+// synthesis translate_off
+logic [31:0] sq_ov_data_ref;
+logic [3:0]  sq_ov_be_ref;
+always_comb begin
+    sq_ov_data_ref = 32'd0;
+    sq_ov_be_ref   = 4'd0;
     // Oldest to youngest, so the youngest matching store's bytes win.
     for (int k = 0; k < STOREQ_DEPTH; k++) begin
         if (k < storeq_count &&
             storeq_valid[storeq_age_idx(storeq_tail, k)] &&
             storeq_addr[storeq_age_idx(storeq_tail, k)] == {req_addr_r[31:4], sq_fwd_word}) begin
-            sq_ov_data = merge32(sq_ov_data, storeq_data[storeq_age_idx(storeq_tail, k)],
-                                 storeq_be[storeq_age_idx(storeq_tail, k)]);
-            sq_ov_be   = sq_ov_be | storeq_be[storeq_age_idx(storeq_tail, k)];
+            sq_ov_data_ref = merge32(sq_ov_data_ref, storeq_data[storeq_age_idx(storeq_tail, k)],
+                                     storeq_be[storeq_age_idx(storeq_tail, k)]);
+            sq_ov_be_ref   = sq_ov_be_ref | storeq_be[storeq_age_idx(storeq_tail, k)];
         end
     end
 end
+always @(posedge clk)
+    if (!reset && ((sq_ov_be !== sq_ov_be_ref) || (sq_ov_data !== sq_ov_data_ref)))
+        $fatal(1, "l1_cache: physical-slot store-queue overlay %h/%h != age chain %h/%h",
+               sq_ov_be, sq_ov_data, sq_ov_be_ref, sq_ov_data_ref);
+// synthesis translate_on
 
 always_comb begin
     lookup_forward_data = merge32(lookup_way_data, sq_ov_data, sq_ov_be);
