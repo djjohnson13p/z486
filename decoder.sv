@@ -20,6 +20,10 @@ module decoder
                                         //   or the whole rest of the instruction
                                         //   at handoff - struct AND literal bytes)
     output       [3:0]  k1p_preread_adv,// structural advance without D2 backpressure
+    output       [3:0]  k1p_adv_u,      // the advance if D1 steps (a prefix/0F: 1,
+                                        //   else the handoff's), byte availability aside
+    output              k1p_step_ok,    // the preread cursor steps by it this cycle
+    output              k1p_commit_u,   // and the committed cursor steps with it
     input        [31:0] k2q,            // 4 bytes at pop_cursor + k2p_off
     input        [5:0]  k2q_avail,      // bytes fetched beyond that point
     output       [4:0]  k2p_off,        // literal offset from the pop cursor
@@ -454,6 +458,30 @@ assign k1p_adv = (consume_prefix || consume_0f) ? 4'd1 :
 assign k1p_preread_adv = (consume_prefix || consume_0f) ? 4'd1 :
                         d1_preread_handoff ? handoff_adv[3:0] :
                         4'd0;
+// The same advances split into the step's size (k1p_adv_u, from the opcode
+// and the length tables) and whether the byte-availability tests let D1 take
+// it (k1p_step_ok; k1p_commit_u adds D2's backpressure), so prefetch forms
+// the advanced D1 window from k1p_adv_u and picks it or the held window last:
+// the pf pointers -> k1q_avail -> d1_struct_ready -> cursor adder -> window
+// mux -> k1q_r / entry-ROM address cone ends at that pick. A prefix or 0F
+// steps when one byte is in view; the instruction when d1_struct_ready (which
+// needs a byte, so the two are exclusive with an empty view):
+//   k1p_preread_adv == (k1p_step_ok ? k1p_adv_u : 0), and k1p_adv equals it
+//   whenever k1p_commit_u or !k1p_step_ok (else k1p_adv is 0).
+// tests/equiv/kpre_window_split.v proves the windows prefetch builds from
+// them equal to the ones it built from k1p_adv / k1p_preread_adv; fuses
+// below hold these identities every cycle.
+wire d1_pre_u = !prefix_0f && (is_prefix(opcode) || (opcode == 8'h0f));
+assign k1p_adv_u    = d1_pre_u ? 4'd1 : handoff_adv[3:0];
+assign k1p_step_ok  = d1_pre_u ? avail_ge(k1q_avail_raw, k1q_avail_lim, 6'd1) : d1_struct_ready;
+assign k1p_commit_u = k1p_step_ok && (d1_pre_u || d1_slot_ready);
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && ((k1p_preread_adv !== (k1p_step_ok ? k1p_adv_u : 4'd0)) ||
+                    (k1p_adv !== ((k1p_step_ok && (d1_pre_u || d1_slot_ready)) ? k1p_adv_u : 4'd0))))
+        $fatal(1, "D1 split advance mismatch: adv=%0d pre=%0d u=%0d ok=%b commit=%b",
+               k1p_adv, k1p_preread_adv, k1p_adv_u, k1p_step_ok, k1p_commit_u);
+// synthesis translate_on
 
 //=============================================================================
 // The skeleton register (D1 -> D2 pipeline boundary; Step 2's lookahead)

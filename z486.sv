@@ -415,6 +415,9 @@ wire [5:0]  k1q_avail_lim;           //   and the CS-limit bound
 wire [3:0]  k1p_adv;                 // D1 cursor advance this cycle (a prefix, or
                                     //   the instruction rest at handoff, 0-11)
 wire [3:0]  k1p_preread_adv;         // structural advance without D2 backpressure
+wire [3:0]  k1p_adv_u;               // the advance if D1 steps (availability aside)
+wire        k1p_step_ok;             // the preread cursor steps by it
+wire        k1p_commit_u;            // and the committed cursor with it
 wire [31:0] k2q;                // D2 literal window at pop_cursor + k2p_off
 wire [5:0]  k2q_avail;              // bytes fetched beyond that point
 wire [4:0]  dec_lit_off;            // literal offset from the pop cursor
@@ -1150,6 +1153,9 @@ prefetch prefetch_inst (
     .k1q_avail_lim(k1q_avail_lim),
     .k1p_adv(k1p_adv),
     .k1p_preread_adv(k1p_preread_adv),
+    .k1p_adv_u(k1p_adv_u),
+    .k1p_step_ok(k1p_step_ok),
+    .k1p_commit_u(k1p_commit_u),
     .k2q(k2q),
     .k2q_avail(k2q_avail),
     .k2p_off(dec_lit_off),
@@ -1387,6 +1393,9 @@ decoder decoder_inst (
     .k1q_avail_lim(k1q_avail_lim),
     .k1p_adv     (k1p_adv),
     .k1p_preread_adv(k1p_preread_adv),
+    .k1p_adv_u(k1p_adv_u),
+    .k1p_step_ok(k1p_step_ok),
+    .k1p_commit_u(k1p_commit_u),
     .k2q    (k2q),
     .k2q_avail  (k2q_avail),
     .k2p_off    (dec_lit_off),

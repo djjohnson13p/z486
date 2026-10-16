@@ -19,6 +19,9 @@ module prefetch
     input      [3:0]  k1p_adv,        // D1 cursor advance this cycle (0-11: a
                                      //   prefix, or the instruction rest at handoff)
     input      [3:0]  k1p_preread_adv,// structural advance independent of D2 availability
+    input      [3:0]  k1p_adv_u,      // the advance if D1 steps (availability aside)
+    input             k1p_step_ok,    // k1p_preread_adv == (k1p_step_ok ? k1p_adv_u : 0)
+    input             k1p_commit_u,   // k1p_adv == (k1p_commit_u ? k1p_adv_u : 0)
     output     [31:0] k2q,       // 4 bytes at pop_cursor + k2p_off
     output     [5:0]  k2q_avail,     // bytes fetched beyond that point
     input      [4:0]  k2p_off,       // literal offset from the pop cursor
@@ -438,27 +441,42 @@ wire [63:0] k1q_flush_next = d1_window(queue_fl, {2'b00, spec_off[3:2]}, spec_of
 // Run the entry-table cursor from structural decode alone. If the real D1
 // cursor is held by D2, the decoder keeps the prior table output; therefore
 // this address never needs issue, VIPT, paging, or execution readiness.
-logic [3:0] k1p_preread_word;
-logic [1:0] k1p_preread_boff;
+// The stepped window is formed from the step's size alone (k1p_adv_u: the
+// opcode and the length tables), and the decoder's byte-availability verdict
+// (k1p_step_ok / k1p_commit_u) picks it or the held window last, so the
+// pf pointers -> k1q_avail -> d1_struct_ready path ends at that pick instead
+// of running through the cursor adder and the window mux. A seed (empty
+// queue: nothing is in view, so D1 takes no step) rebases the cursor as
+// before. tests/equiv/kpre_window_split.v proves both windows equal to the
+// k1p_preread_adv / k1p_adv forms; the reference fuses below hold them.
+logic [3:0] k1p_u_word;
+logic [1:0] k1p_u_boff;
+wire  [3:0] k1p_u_sum = {2'b00, k1p_boff} + k1p_adv_u;
 always_comb begin
-    k1p_preread_word = k1p_word + {2'b00, k1p_preread_sum[3:2]};
-    k1p_preread_boff = k1p_preread_sum[1:0];
+    k1p_u_word = k1p_word + {2'b00, k1p_u_sum[3:2]};
+    k1p_u_boff = k1p_u_sum[1:0];
     if (seed_now) begin
-        k1p_preread_word = k1p_preread_word + seed_delta;
-        k1p_preread_boff = pf_fetch_addr[1:0];
+        k1p_u_word = k1p_word + seed_delta;
+        k1p_u_boff = pf_fetch_addr[1:0];
     end
 end
-
-wire [63:0] k1q_preread_nf = d1_window(queue_nf, k1p_preread_word, k1p_preread_boff);
+wire [63:0] k1q_step_nf = d1_window(queue_nf, k1p_u_word, k1p_u_boff);
+wire [63:0] k1q_preread_nf = (seed_now || k1p_step_ok) ? k1q_step_nf : k1q_hold_next;
 wire [63:0] k1q_preread_next = q_flush ? k1q_flush_next : k1q_preread_nf;
 assign k1q_early = k1q_preread_next;
 
 // q_flush gives both cursor views the same redirected origin. Otherwise the
 // real cursor advances exactly when structural preread and committed advance
-// agree; disagreement means D2 held the handoff.
-wire k1p_commit_preread = q_flush || (k1p_adv == k1p_preread_adv);
+// agree (k1p_commit_u); disagreement means D2 held the handoff.
 wire [63:0] k1q_next = q_flush ? k1q_flush_next :
-                       (k1p_adv == k1p_preread_adv) ? k1q_preread_nf : k1q_hold_next;
+                       (seed_now || k1p_commit_u) ? k1q_step_nf : k1q_hold_next;
+// synthesis translate_off
+// The split's premise: a seed cycle (empty queue) has no D1 step.
+always @(posedge clk)
+    if (reset_n && seed_now && (k1p_step_ok || (k1p_adv != 4'd0) || (k1p_preread_adv != 4'd0)))
+        $fatal(1, "PF: D1 steps in a seed cycle (ok=%b adv=%0d pre=%0d)",
+               k1p_step_ok, k1p_adv, k1p_preread_adv);
+// synthesis translate_on
 
 // synthesis translate_off
 wire [31:0] k1p_reference_word_cur = queue_next[ptr_idx(k1p_word_next)];
