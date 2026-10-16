@@ -119,6 +119,9 @@ module cache_unit
     output logic dcache_vipt_probe_direct_accepted,
     input  logic dcache_vipt_resolve_valid,
     input  logic [31:0] dcache_vipt_resolve_phys_addr_raw,
+    input  logic [31:0] dcache_vipt_resolve_tlb_phys_raw,
+    input  logic [31:0] dcache_vipt_resolve_alt_phys_raw,
+    input  logic dcache_vipt_resolve_use_tlb,
     output logic dcache_vipt_resolve_hit,
     output logic [31:0] dcache_vipt_resolve_data,
 
@@ -198,6 +201,11 @@ wire [31:0] dcache_req_a20_mask = (a20_enable || dcache_req_is_io)
 assign dcache_req_phys_addr = dcache_req_phys_addr_raw & dcache_req_a20_mask;
 wire [31:0] dcache_vipt_resolve_phys_addr = dcache_vipt_resolve_phys_addr_raw &
                                             (a20_enable ? A20_MASK_ON : A20_MASK_OFF);
+// The same mask on each arm (mask(sel ? t : a) = sel ? mask(t) : mask(a)).
+wire [31:0] dcache_vipt_resolve_tlb_phys = dcache_vipt_resolve_tlb_phys_raw &
+                                           (a20_enable ? A20_MASK_ON : A20_MASK_OFF);
+wire [31:0] dcache_vipt_resolve_alt_phys = dcache_vipt_resolve_alt_phys_raw &
+                                           (a20_enable ? A20_MASK_ON : A20_MASK_OFF);
 wire [31:0] fast_store_phys_addr = fast_store_phys_addr_raw &
                                    (a20_enable ? A20_MASK_ON : A20_MASK_OFF);
 wire [31:0] icache_req_phys_addr = icache_req_phys_addr_raw &
@@ -736,6 +744,9 @@ l1_cache #(
     .vipt_probe_accepted(dcache_vipt_probe_accepted),
     .vipt_probe_direct_accepted(dcache_vipt_probe_direct_accepted),
     .vipt_resolve_phys_addr(dcache_vipt_resolve_phys_addr),
+    .vipt_resolve_tlb_phys(dcache_vipt_resolve_tlb_phys),
+    .vipt_resolve_alt_phys(dcache_vipt_resolve_alt_phys),
+    .vipt_resolve_use_tlb(dcache_vipt_resolve_use_tlb),
     .vipt_resolve_valid(dcache_vipt_resolve_valid),
     .vipt_resolve_data(dcache_vipt_resolve_data),
     .vipt_resolve_hit(dcache_vipt_resolve_hit_cache),

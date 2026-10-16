@@ -128,6 +128,9 @@ module memory
     output             dcache_vipt_probe_direct_accepted,
     input              dcache_vipt_resolve_valid,
     input      [31:0]  dcache_vipt_resolve_phys_addr_raw,
+    input      [31:0]  dcache_vipt_resolve_tlb_phys_raw,   // the address's arms and select
+    input      [31:0]  dcache_vipt_resolve_alt_phys_raw,   // (data_access), for the tag compare
+    input              dcache_vipt_resolve_use_tlb,
     output             dcache_vipt_resolve_hit,
     output     [31:0]  dcache_vipt_resolve_data,
 
@@ -304,6 +307,9 @@ cache_unit #(
     .dcache_vipt_probe_direct_accepted(dcache_vipt_probe_direct_accepted),
     .dcache_vipt_resolve_valid(dcache_vipt_resolve_valid),
     .dcache_vipt_resolve_phys_addr_raw(dcache_vipt_resolve_phys_addr_raw),
+    .dcache_vipt_resolve_tlb_phys_raw(dcache_vipt_resolve_tlb_phys_raw),
+    .dcache_vipt_resolve_alt_phys_raw(dcache_vipt_resolve_alt_phys_raw),
+    .dcache_vipt_resolve_use_tlb(dcache_vipt_resolve_use_tlb),
     .dcache_vipt_resolve_hit(dcache_vipt_resolve_hit),
     .dcache_vipt_resolve_data(dcache_vipt_resolve_data),
     // Paging unit: instruction line request (prefetch)

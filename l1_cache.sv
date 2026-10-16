@@ -60,6 +60,12 @@ module l1_cache #(
     output        vipt_probe_accepted,
     output        vipt_probe_direct_accepted,
     input  [31:0] vipt_resolve_phys_addr,
+    // vipt_resolve_phys_addr = vipt_resolve_use_tlb ? vipt_resolve_tlb_phys
+    //                                               : vipt_resolve_alt_phys
+    // (data_access fuses it): the tag compare takes each arm and the select last.
+    input  [31:0] vipt_resolve_tlb_phys,
+    input  [31:0] vipt_resolve_alt_phys,
+    input         vipt_resolve_use_tlb,
     input         vipt_resolve_valid,
     output [31:0] vipt_resolve_data,
     output        vipt_resolve_hit,
@@ -407,6 +413,13 @@ begin
 end
 endfunction
 
+// A way's tag against the resolve address, compared on each of its two arms
+// with the arm select last: (tag == (sel ? t : a)) = sel ? tag == t : tag == a.
+function automatic logic vipt_tag_eq_split(input logic sel, input [TAG_BITS-1:0] tag,
+                                           input [TAG_BITS-1:0] t, input [TAG_BITS-1:0] a);
+    vipt_tag_eq_split = sel ? (tag == t) : (tag == a);
+endfunction
+
 function automatic [STOREQ_IDX_BITS-1:0] storeq_age_idx(
     input [STOREQ_IDX_BITS-1:0] tail, input integer k);
     integer i;
@@ -519,12 +532,31 @@ wire [31:0] lookup_way_data = way_patch_pick(lookup_way, rd_data0_r, rd_data1_r,
     rd_data2_r, rd_data3_r, patch_fwd_match, patch_fwd_way_r, patch_fwd_data_r);
 wire [TAG_BITS-1:0] vipt_resolve_tag =
     vipt_resolve_phys_addr[TAG_MSB:TAG_LSB];
+// The tag compare against each arm of the resolve address, the VIPT TLB hit
+// (vipt_resolve_use_tlb) selecting the result: the TLB M10K's physical page is
+// compared in parallel with the TLB's own tag compare instead of after it (the
+// fitted vipt_tlb q -> vipt_hit (fo ~32) -> resolve address -> tag compare ->
+// vipt_hit_vec -> vipt_load_ex_hit -> d2_ready path).  Equal to the compare
+// against vipt_resolve_tag (tests/equiv/vipt_tag_split.v; fused below).
+wire [TAG_BITS-1:0] vipt_resolve_tag_tlb = vipt_resolve_tlb_phys[TAG_MSB:TAG_LSB];
+wire [TAG_BITS-1:0] vipt_resolve_tag_alt = vipt_resolve_alt_phys[TAG_MSB:TAG_LSB];
 wire [3:0] vipt_hit_vec = {
-    rd_valid3_r && !rd_invalidated_r[3] && (rd_tag3_r == vipt_resolve_tag),
-    rd_valid2_r && !rd_invalidated_r[2] && (rd_tag2_r == vipt_resolve_tag),
-    rd_valid1_r && !rd_invalidated_r[1] && (rd_tag1_r == vipt_resolve_tag),
-    rd_valid0_r && !rd_invalidated_r[0] && (rd_tag0_r == vipt_resolve_tag)
+    rd_valid3_r && !rd_invalidated_r[3] &&
+        vipt_tag_eq_split(vipt_resolve_use_tlb, rd_tag3_r, vipt_resolve_tag_tlb, vipt_resolve_tag_alt),
+    rd_valid2_r && !rd_invalidated_r[2] &&
+        vipt_tag_eq_split(vipt_resolve_use_tlb, rd_tag2_r, vipt_resolve_tag_tlb, vipt_resolve_tag_alt),
+    rd_valid1_r && !rd_invalidated_r[1] &&
+        vipt_tag_eq_split(vipt_resolve_use_tlb, rd_tag1_r, vipt_resolve_tag_tlb, vipt_resolve_tag_alt),
+    rd_valid0_r && !rd_invalidated_r[0] &&
+        vipt_tag_eq_split(vipt_resolve_use_tlb, rd_tag0_r, vipt_resolve_tag_tlb, vipt_resolve_tag_alt)
 };
+// synthesis translate_off
+always @(posedge clk)
+    if (!reset && vipt_resolve_valid &&
+        (vipt_resolve_phys_addr !== (vipt_resolve_use_tlb ? vipt_resolve_tlb_phys
+                                                          : vipt_resolve_alt_phys)))
+        $fatal(1, "l1_cache: the VIPT resolve arms disagree with vipt_resolve_phys_addr");
+// synthesis translate_on
 wire [1:0] vipt_hit_way = way_encode(vipt_hit_vec);
 wire [31:0] vipt_way_ram_data = way_data_mux(
     vipt_hit_way, rd_data0_r, rd_data1_r, rd_data2_r, rd_data3_r);

@@ -86,6 +86,8 @@ module paging_unit
     input               vipt_fallback,
     output              vipt_tlb_hit,
     output       [31:0] vipt_tlb_phys_addr,
+    output       [31:0] vipt_tlb_phys_hit_form,   // vipt_tlb_phys_addr when vipt_tlb_hit
+    output       [31:0] vipt_tlb_phys_miss_form,  // vipt_tlb_phys_addr when !vipt_tlb_hit
     output              vipt_tlb_writable,
     output              vipt_tlb_user,
     output              vipt_tlb_dirty,
@@ -295,6 +297,8 @@ paging_tlb #(.VGA_BASE(VGA_BASE), .VGA_TOP(VGA_TOP)) tlb_inst (
     .vipt_linear_addr(vipt_linear_addr),
     .vipt_hit       (vipt_tlb_hit),
     .vipt_physical_addr(vipt_tlb_phys_addr),
+    .vipt_physical_hit_form(vipt_tlb_phys_hit_form),
+    .vipt_physical_miss_form(vipt_tlb_phys_miss_form),
     .vipt_writable  (vipt_tlb_writable),
     .vipt_user      (vipt_tlb_user),
     .vipt_dirty     (vipt_tlb_dirty),

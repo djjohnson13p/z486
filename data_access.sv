@@ -25,6 +25,12 @@ module data_access
     output logic [11:0]             dcache_vipt_probe_offset,
     output logic                    dcache_vipt_probe_valid,
     output logic [31:0]             dcache_vipt_resolve_phys_addr,
+    // dcache_vipt_resolve_phys_addr's two arms and the late select between them
+    // (the VIPT TLB hit), so the D-cache tag compare runs on both arms in
+    // parallel with the TLB's own compare (l1_cache vipt_hit_vec).
+    output logic [31:0]             dcache_vipt_resolve_tlb_phys,
+    output logic [31:0]             dcache_vipt_resolve_alt_phys,
+    output logic                    dcache_vipt_resolve_use_tlb,
     output logic                    dcache_vipt_resolve_valid,
     output logic [3:0]              fast_store_be,
     output logic                    fast_store_valid,
@@ -43,6 +49,8 @@ module data_access
     input  logic                    vipt_tlb_hit,
     input  logic                    vipt_tlb_is_vga_mem,
     input  logic [31:0]             vipt_tlb_phys_addr,
+    input  logic [31:0]             vipt_tlb_phys_hit_form,
+    input  logic [31:0]             vipt_tlb_phys_miss_form,
     input  logic                    vipt_tlb_user,
     input  logic                    vipt_tlb_writable,
     output logic                    sidecar_bg_pre,
@@ -459,6 +467,21 @@ assign dcache_vipt_resolve_valid = (((vipt_load_ex_r.valid &&
 assign ucrd_hit = ucrd_valid_r && ucrd_translation_ok && !vipt_tlb_is_vga_mem &&
                 dcache_vipt_resolve_hit;
 assign dcache_vipt_resolve_phys_addr = vipt_resolve_phys;
+// vipt_resolve_phys = page_en ? (tlb_hit ? hit_form : miss_form) : linear
+//                   = (page_en && tlb_hit) ? hit_form : (page_en ? miss_form : linear)
+assign dcache_vipt_resolve_tlb_phys = vipt_tlb_phys_hit_form;
+assign dcache_vipt_resolve_alt_phys = vipt_page_enabled ? vipt_tlb_phys_miss_form
+                                                        : vipt_resolve_linear;
+assign dcache_vipt_resolve_use_tlb  = vipt_page_enabled && vipt_tlb_hit;
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && ((vipt_tlb_phys_addr !== (vipt_tlb_hit ? vipt_tlb_phys_hit_form
+                                                          : vipt_tlb_phys_miss_form)) ||
+                    (vipt_resolve_phys !== (dcache_vipt_resolve_use_tlb
+                                            ? dcache_vipt_resolve_tlb_phys
+                                            : dcache_vipt_resolve_alt_phys))))
+        $fatal(1, "data_access: the VIPT resolve address arms disagree with the address");
+// synthesis translate_on
 
 // A synthetic RNI is required only when the direct pipeline drains. Interior
 // load boundaries are represented by their D2 issue and WB commit tokens.

@@ -528,6 +528,11 @@ wire        dcache_vipt_resolve_hit;
 wire [31:0] dcache_vipt_resolve_data;
 wire        vipt_tlb_hit;
 wire [31:0] vipt_tlb_phys_addr;
+wire [31:0] vipt_tlb_phys_hit_form;
+wire [31:0] vipt_tlb_phys_miss_form;
+wire [31:0] dcache_vipt_resolve_tlb_phys;
+wire [31:0] dcache_vipt_resolve_alt_phys;
+wire        dcache_vipt_resolve_use_tlb;
 wire        vipt_tlb_writable;
 wire        vipt_tlb_user;
 wire        vipt_tlb_dirty;
@@ -1078,6 +1083,9 @@ memory #(
     .dcache_vipt_probe_direct_accepted(dcache_vipt_probe_direct_accepted),
     .dcache_vipt_resolve_valid(dcache_vipt_resolve_valid),
     .dcache_vipt_resolve_phys_addr_raw(dcache_vipt_resolve_phys_addr),
+    .dcache_vipt_resolve_tlb_phys_raw(dcache_vipt_resolve_tlb_phys),
+    .dcache_vipt_resolve_alt_phys_raw(dcache_vipt_resolve_alt_phys),
+    .dcache_vipt_resolve_use_tlb(dcache_vipt_resolve_use_tlb),
     .dcache_vipt_resolve_hit(dcache_vipt_resolve_hit),
     .dcache_vipt_resolve_data(dcache_vipt_resolve_data),
 
@@ -2670,6 +2678,9 @@ data_access data_access_inst (
     .dcache_vipt_probe_offset(dcache_vipt_probe_offset),
     .dcache_vipt_probe_valid(dcache_vipt_probe_valid),
     .dcache_vipt_resolve_phys_addr(dcache_vipt_resolve_phys_addr),
+    .dcache_vipt_resolve_tlb_phys(dcache_vipt_resolve_tlb_phys),
+    .dcache_vipt_resolve_alt_phys(dcache_vipt_resolve_alt_phys),
+    .dcache_vipt_resolve_use_tlb(dcache_vipt_resolve_use_tlb),
     .dcache_vipt_resolve_valid(dcache_vipt_resolve_valid),
     .fast_store_be(fast_store_be),
     .fast_store_valid(fast_store_valid),
@@ -2688,6 +2699,8 @@ data_access data_access_inst (
     .vipt_tlb_hit(vipt_tlb_hit),
     .vipt_tlb_is_vga_mem(vipt_tlb_is_vga_mem),
     .vipt_tlb_phys_addr(vipt_tlb_phys_addr),
+    .vipt_tlb_phys_hit_form(vipt_tlb_phys_hit_form),
+    .vipt_tlb_phys_miss_form(vipt_tlb_phys_miss_form),
     .vipt_tlb_user(vipt_tlb_user),
     .vipt_tlb_writable(vipt_tlb_writable),
     .sidecar_bg_pre(sidecar_bg_pre),
@@ -2877,6 +2890,8 @@ paging_unit #(.VGA_BASE(VGA_BASE), .VGA_TOP(VGA_TOP)) paging_inst (
     .vipt_fallback      (paging_owned_submit),
     .vipt_tlb_hit       (vipt_tlb_hit),
     .vipt_tlb_phys_addr (vipt_tlb_phys_addr),
+    .vipt_tlb_phys_hit_form (vipt_tlb_phys_hit_form),
+    .vipt_tlb_phys_miss_form(vipt_tlb_phys_miss_form),
     .vipt_tlb_writable  (vipt_tlb_writable),
     .vipt_tlb_user      (vipt_tlb_user),
     .vipt_tlb_dirty     (vipt_tlb_dirty),
