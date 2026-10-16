@@ -47,6 +47,8 @@ module decoder
     output              d2_push,        // d2_entry is complete this cycle
     output              d1_issue_direct,// handoff has no older D2 skeleton
     output dec_entry_t  d1_issue_entry, // live structural entry for empty-pipe launch
+    output       [31:0] d2_branch_disp, // a relative branch's displacement, as
+                                        //   (branch_rel8 ? sext8 : ) d2_entry's
     output              fetch_blocked   // decoder is waiting for unfetched bytes
 );
 
@@ -155,6 +157,39 @@ function automatic logic [11:0] recipe_effective_entry_hit(
     if (hit[5] && (opcode == 8'h90))
         recipe_effective_entry_hit = 12'h9C9;
 endfunction
+// ov_hits of the second-level group ROM's word, as a function of that ROM's
+// own address {group, ModR/M.reg, memory}: the ROM is constant, so the hit
+// vector is too, and this decode runs beside the ROM read instead of behind
+// it (the k1q -> group ROM -> entry compare -> overlay -> port-B address
+// cone loses the 12-bit compare). tests/equiv/group_overlay_addr.v proves
+// group_ov_hits(a) == ov_hits(group_entry_rom[a]) for every address against
+// the shipped pla_group_entry.hex, so a regenerated ROM that this table does
+// not follow is refuted there.
+function automatic logic [5:0] group_ov_hits(input logic [9:0] grom_addr);
+    begin
+        // The six words' address sets are disjoint (one word per address).
+        casez (grom_addr)
+            10'b101000???1: group_ov_hits = 6'b000001;
+            10'b1101110001: group_ov_hits = 6'b000001;
+            10'b1010110001: group_ov_hits = 6'b000001;
+            10'b1010?????0: group_ov_hits = 6'b000010;
+            10'b110110???0: group_ov_hits = 6'b000010;
+            10'b101?000??0: group_ov_hits = 6'b000010;
+            10'b10101?001?: group_ov_hits = 6'b000010;
+            10'b1101110011: group_ov_hits = 6'b000010;
+            10'b101100001?: group_ov_hits = 6'b000010;
+            10'b1101111001: group_ov_hits = 6'b000010;
+            10'b101010?01?: group_ov_hits = 6'b000010;
+            10'b11011101?1: group_ov_hits = 6'b000100;
+            10'b10101101?1: group_ov_hits = 6'b000100;
+            10'b000000???1: group_ov_hits = 6'b001000;
+            10'b01010?00?1: group_ov_hits = 6'b010000;
+            10'b01011001?1: group_ov_hits = 6'b010000;
+            10'b001000???0: group_ov_hits = 6'b100000;
+            default: group_ov_hits = 6'd0;
+        endcase
+    end
+endfunction
 
 decoder_work_t struct_work;
 logic [2:0]    struct_len;
@@ -165,8 +200,8 @@ wire [53:0] struct_work_inputs = {
     opcode, modrm, sib_b, prefix_0f, prefix_rep, prefix_count, data32, addr32,
     prefix_rep_lock, prefix_seg, entry_rom_sel, pe_enable
 };
-logic [5:0]    struct_ov_hit;   // ov_hits(struct_work.entry.entry_point), per source
-always_comb build_struct_work(struct_work_inputs, struct_work, struct_len, struct_ov_hit);
+logic [11:0]   struct_ov_entry; // the overlaid entry point, taken per entry source
+always_comb build_struct_work(struct_work_inputs, struct_work, struct_len, struct_ov_entry);
 
 wire struct_bytes_ok = avail_ge(k1q_avail_raw, k1q_avail_lim, {3'b000, struct_len});
 
@@ -250,24 +285,34 @@ end
 // the operand from the L1 and write it through the direct store port, while a
 // locked RMW must read memory under LOCK# (lock_insn, the locked-read path).
 // LOCK is #UD on every other overlay's opcode, so no overlay is taken under it.
-// The overlay redirect with its entry compares taken per entry source in
-// structural decode (struct_ov_hit; capture_sib leaves the entry, opcode and
-// ModR/M alone): the D1 entry -> overlay compares -> port-B ROM address cone
-// (k1q -> the PLA / group ROM -> entry mux -> Equal -> d1_issue_entry) loses
-// the compare behind the entry mux. tests/equiv/overlay_entry_hit.v proves
-// recipe_effective_entry_hit(e, ov_hits(e), ...) equal to the generated
-// recipe_effective_entry(e, ...) for every input; a translate_off fuse holds
-// struct_ov_hit == ov_hits(struct_work.entry.entry_point) every cycle.
-wire [11:0] handoff_overlay_entry = recipe_effective_entry_hit(
-    handoff_work.entry.entry_point,
-    struct_ov_hit,
-    handoff_work.entry.opcode,
-    handoff_work.entry.modrm);
+// The overlay redirect taken per entry source in structural decode
+// (struct_ov_entry; capture_sib leaves the entry, opcode and ModR/M alone):
+// each arm of the entry mux carries its own overlaid entry, the group ROM's
+// hits decoded from its address (group_ov_hits), so the D1 entry -> overlay ->
+// port-B ROM address cone (k1q -> group ROM -> entry mux -> d1_issue_entry)
+// has no entry compare behind the ROM or the mux.
+// tests/equiv/overlay_entry_hit.v proves recipe_effective_entry_hit(e,
+// ov_hits(e), ...) equal to the generated recipe_effective_entry(e, ...);
+// tests/equiv/group_overlay_addr.v proves the group arm's address form; a
+// translate_off fuse holds struct_ov_entry == the overlay of
+// struct_work.entry.entry_point every non-flush cycle.
+wire [11:0] handoff_overlay_entry = struct_ov_entry;
 // synthesis translate_off
+// The group arm's address form needs the group row to be the live opcode's
+// (the entry-ROM word is current), which the entry-ROM fuse holds in every
+// non-flush cycle; the same qualification here.
 always @(posedge clk)
-    if (reset_n && (struct_ov_hit !== ov_hits(struct_work.entry.entry_point)))
-        $fatal(1, "D1 OVERLAY HIT MISMATCH: hit=%b entry=%03x", struct_ov_hit,
-               struct_work.entry.entry_point);
+    if (reset_n && !q_flush && (^entry_rom_sel !== 1'bx) &&
+        (struct_ov_entry !== recipe_effective_entry_hit(
+                        struct_work.entry.entry_point,
+                        ov_hits(struct_work.entry.entry_point),
+                        struct_work.entry.opcode, struct_work.entry.modrm)))
+        $fatal(1, "D1 OVERLAY ENTRY MISMATCH: ov=%03x entry=%03x op=%02x modrm=%02x ref=%03x sel=%04x",
+               struct_ov_entry, struct_work.entry.entry_point,
+               struct_work.entry.opcode, struct_work.entry.modrm,
+               recipe_effective_entry_hit(struct_work.entry.entry_point,
+                        ov_hits(struct_work.entry.entry_point),
+                        struct_work.entry.opcode, struct_work.entry.modrm), entry_rom_sel);
 // synthesis translate_on
 wire [11:0] handoff_entry_point = (handoff_work.entry.rep_lock == PREFIX_LOCK)
                                 ? handoff_work.entry.entry_point
@@ -539,6 +584,22 @@ wire [31:0] skel_raw_lit_win =
     skel_raw_lit_off_r == 2'd2 ? {skel_raw_hi_r[15:0], skel_lit_r[31:16]} :
                                  {skel_raw_hi_r[23:0], skel_lit_r[31:24]};
 wire [31:0] skel_lit_win = skel_window_raw_r ? skel_raw_lit_win : skel_lit_r;
+// A relative branch (Jcc, JMP, CALL rel) has one literal, a displacement (or
+// an immediate that mirrors into it), starting at raw offset 1 (the opcode is the
+// whole structural part; a 0F was consumed as a prefix) - tests/equiv/
+// branch_lit_plan.v proves that plan from the decode tables. So its
+// displacement is the registered window at a constant offset, sized by the
+// registered skeleton: the speculative branch-target cone (literal offset ->
+// 4:1 window mux -> capture -> D2 merge -> spec_disp -> target adder -> line
+// compares -> spec launch) starts at registers. tests/equiv/
+// spec_branch_disp.v proves it equal to the d2_entry displacement form under
+// that plan; a translate_off fuse holds it at every D2 completion of a
+// relative branch.
+wire [31:0] skel_branch_win = skel_window_raw_r ? {skel_raw_hi_r[7:0], skel_lit_r[31:8]}
+                                                : skel_lit_r;
+assign d2_branch_disp = skel.entry.branch_rel8
+                      ? {{24{skel_branch_win[7]}}, skel_branch_win[7:0]}
+                      : literal_value(skel_branch_win, skel.lit1_size, skel.lit1_sign_extend);
 wire [31:0] winB = (sizeA == 3'd1) ? { 8'h00, skel_lit_win[31:8]}  :
                    (sizeA == 3'd2) ? {16'h0,  skel_lit_win[31:16]} :
                    (sizeA == 3'd3) ? {24'h0,  skel_lit_win[31:24]} : 32'h0;
@@ -719,6 +780,23 @@ always @(posedge clk) begin
                skel.entry.length, skel_lit_off, skel.lit1_size, skel.lit2_size);
     if (reset_n && d2_phaseB && !skel_v)
         $fatal(1, "D2: phase B with no skeleton");
+    // The relative-branch displacement against the d2_entry form it replaced
+    // on the speculative-target path, and the literal plan its proof assumes.
+    if (reset_n && skel_v && (skel.entry.rel_branch_kind != REL_BRANCH_NONE) &&
+        (!((skel.lit1_kind == LIT_DISP) || ((skel.lit1_kind == LIT_IMM) && skel.lit1_mirror_disp)) ||
+         !((skel.lit1_size == 3'd1) || (skel.lit1_size == 3'd2) || (skel.lit1_size == 3'd4)) ||
+         (skel.lit2_kind != LIT_NONE) || d2_phaseB ||
+         (skel_window_raw_r && (skel_raw_lit_off_r != 2'd1))))
+        $fatal(1, "D2: relative branch literal plan: op=%02x lit1=%0d/%0d mirror=%b lit2=%0d phB=%b raw=%b off=%0d",
+               skel.entry.opcode, skel.lit1_kind, skel.lit1_size, skel.lit1_mirror_disp,
+               skel.lit2_kind, d2_phaseB, skel_window_raw_r, skel_raw_lit_off_r);
+    if (reset_n && d2_push && (push_entry.rel_branch_kind != REL_BRANCH_NONE) &&
+        (d2_branch_disp !== (push_entry.branch_rel8
+                             ? {{24{push_entry.displacement[7]}}, push_entry.displacement[7:0]}
+                             : push_entry.displacement)))
+        $fatal(1, "D2: branch displacement %08x disagrees with d2_entry %08x (op=%02x rel8=%b)",
+               d2_branch_disp, push_entry.displacement, push_entry.opcode,
+               push_entry.branch_rel8);
 end
 // synthesis translate_on
 
@@ -741,15 +819,15 @@ task automatic build_struct_work(
     input logic [53:0]    sensitivity_inputs,
     output decoder_work_t w,
     output logic [2:0]    s_len,
-    output logic [5:0]    ov_hit
+    output logic [11:0]   ov_entry
 );
     logic [11:0] ctl_bits;
     logic [15:0] entry_first;
     logic [15:0] entry_grom;
     logic [15:0] entry_final;
-    logic [6:0]  group_dec;
     logic        entry_group;
     logic [5:0]  group_code;
+    logic [9:0]  grom_addr;
     logic        has_modrm;
     logic        has_sib;
     logic [2:0]  disp_size;
@@ -799,13 +877,20 @@ task automatic build_struct_work(
         // A PE/D change flushes the frontend, so a skeleton is never consumed
         // across a mode switch.
         entry_first = entry_rom_sel;
-        // Decode group validity and row in parallel with entry_first. This
-        // keeps the group select off the first-level entry PLA result.
-        group_dec = pla_group_lookup({data32, opcode, pe_enable, prefix_0f});
-        group_code = group_dec[5:0];
-        entry_group = group_dec[6] && has_modrm;
-        entry_grom = group_entry_rom[{group_code, modrm[5:3],
-                                      (modrm[7:6] != 2'b11)}];
+        // The group row is the first-level entry itself: a ModR/M opcode's
+        // first-level word is a group row exactly when entry[11:6] == 0, and
+        // its row is entry[5:0] (scripts/gen_pla_group.py derives
+        // pla_group_lookup from that rule and checks it on every opcode).
+        // entry_first comes from the preread entry-ROM word, so the group
+        // ROM address no longer waits for the k1q -> opcode-class PLA
+        // (pla_group_lookup, the k1q_r fan-out -> WideNor -> group ROM cone).
+        // tests/equiv/group_from_entry.v proves the two forms equal for
+        // every {data32, opcode, pe, 0F, rep}; a translate_off fuse below
+        // holds them equal every non-flush cycle.
+        group_code = entry_first[5:0];
+        entry_group = has_modrm && (entry_first[11:6] == 6'd0);
+        grom_addr = {group_code, modrm[5:3], (modrm[7:6] != 2'b11)};
+        entry_grom = group_entry_rom[grom_addr];
         entry_final = entry_group ? entry_grom : entry_first;
         invalid_lock = check_lock_invalid(prefix_rep_lock, prefix_0f, opcode,
                                           has_modrm, modrm);
@@ -875,13 +960,25 @@ task automatic build_struct_work(
                                                         : UADDR_MOV_TR_FROM) :
                               (instr_bswap || instr_xadd || instr_cmpxchg || instr_invd)
                                   ? entry_486 : entry_final[11:0];
-        // The overlay sources' entry compares, taken on each arm of the entry
-        // mux above (same selects, same order) instead of on its result.
-        ov_hit = (invalid_lock || instr_loadall) ? ov_hits(UADDR_INVALID_LOCK) :
-                 instr_mov_tr ? ov_hits(opcode[1] ? UADDR_MOV_TR_TO : UADDR_MOV_TR_FROM) :
-                 (instr_bswap || instr_xadd || instr_cmpxchg || instr_invd)
-                     ? ov_hits(entry_486) :
-                 entry_group ? ov_hits(entry_grom[11:0]) : ov_hits(entry_first[11:0]);
+        // The overlaid entry, taken on each arm of the entry mux above (same
+        // selects, same order) instead of on its result; the group ROM's arm
+        // with its hits decoded from its address (group_ov_hits), in parallel
+        // with the ROM read.
+        ov_entry = (invalid_lock || instr_loadall)
+                     ? recipe_effective_entry_hit(UADDR_INVALID_LOCK,
+                                                  ov_hits(UADDR_INVALID_LOCK), opcode, modrm) :
+                   instr_mov_tr
+                     ? recipe_effective_entry_hit(opcode[1] ? UADDR_MOV_TR_TO : UADDR_MOV_TR_FROM,
+                                                  ov_hits(opcode[1] ? UADDR_MOV_TR_TO
+                                                                    : UADDR_MOV_TR_FROM),
+                                                  opcode, modrm) :
+                   (instr_bswap || instr_xadd || instr_cmpxchg || instr_invd)
+                     ? recipe_effective_entry_hit(entry_486, ov_hits(entry_486), opcode, modrm) :
+                   entry_group
+                     ? recipe_effective_entry_hit(entry_grom[11:0], group_ov_hits(grom_addr),
+                                                  opcode, modrm) :
+                   recipe_effective_entry_hit(entry_first[11:0], ov_hits(entry_first[11:0]),
+                                              opcode, modrm);
         w.entry.stack_op = (invalid_lock || instr_bswap || instr_xadd || instr_cmpxchg ||
                             instr_invd || instr_loadall || instr_mov_tr) ? 1'b0 : entry_final[13];
         w.entry.stack_dir = (invalid_lock || instr_bswap || instr_xadd || instr_cmpxchg ||
@@ -1054,6 +1151,20 @@ always_ff @(posedge clk) begin
         (entry_rom_sel !== pla_entry_now))
         $fatal(1, "entry ROM mismatch: op=%02x rom=%04x pla=%04x",
                opcode, entry_rom_sel, pla_entry_now);
+end
+// The group select and row taken from the entry-ROM word (build_struct_work)
+// against the opcode-class PLA they replaced, wherever D1 is live.
+wire [6:0]  pla_group_now = pla_group_lookup({data32, opcode, pe_enable, prefix_0f});
+wire [11:0] grp_ctl_now = pla_control_opcode_lookup(prefix_0f, opcode);
+wire        grp_has_modrm_now = grp_ctl_now[2] && !grp_ctl_now[0];
+wire        grp_old_now = pla_group_now[6] && grp_has_modrm_now;
+wire        grp_new_now = grp_has_modrm_now && (entry_rom_sel[11:6] == 6'd0);
+always_ff @(posedge clk) begin
+    if (reset_n && !q_flush && (^{entry_rom_sel, pla_group_now} !== 1'bx) &&
+        ((grp_old_now !== grp_new_now) ||
+         (grp_old_now && (pla_group_now[5:0] !== entry_rom_sel[5:0]))))
+        $fatal(1, "D1 group from entry ROM mismatch: op=%02x 0f=%b rom=%04x grp=%02x",
+               opcode, prefix_0f, entry_rom_sel, pla_group_now);
 end
 // synthesis translate_on
 

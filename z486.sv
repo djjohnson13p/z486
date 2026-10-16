@@ -712,6 +712,7 @@ wire        prot_redirect_taken;
 // supplies a registered entry address when the current instruction ends.
 wire       d1_issue_direct;
 dec_entry_t d1_issue_entry;
+wire [31:0] d2_branch_disp;      // relative-branch displacement (decoder, registered window)
 // Every D2 instruction issues its first word from ROM port B.
 wire       pb_issue_b23 = pb_valid && (i_rni_delay || ~uc_active) &&
                           ~halted && !q_flush && !fault_suppress_delay_slot &&
@@ -1195,8 +1196,13 @@ prefetch prefetch_inst (
 );
 
 // z486 speculative branch-target fetch
-wire [31:0] spec_disp      = i_bus.branch_rel8 ? {{24{i_bus.displacement[7]}}, i_bus.displacement[7:0]}
-                                          : i_bus.displacement;
+// The relative-branch displacement from the decoder's registered window
+// (d2_branch_disp, equal to the (branch_rel8 ? sext8 : ) i_bus.displacement
+// form whenever a relative branch completes D2 - the decoder's fuse and
+// tests/equiv/spec_branch_disp.v). The target is consumed only for a relative
+// branch (pf_spec_req's rel_branch_kind term, or d2_ret_pred, which replaces
+// the offset; the address unit's branch_relative).
+wire [31:0] spec_disp      = d2_branch_disp;
 // A 16-bit operand size truncates the new EIP to 16 bits.
 wire [31:0] spec_target_sum = EIP + ({27'd0, i_bus.length} + spec_disp);
 wire [31:0] spec_target_eip = i_bus.data32 ? spec_target_sum : {16'h0, spec_target_sum[15:0]};
@@ -1407,6 +1413,7 @@ decoder decoder_inst (
     .d2_push    (d2_push),
     .d1_issue_direct(d1_issue_direct),
     .d1_issue_entry(d1_issue_entry),
+    .d2_branch_disp(d2_branch_disp),
     .fetch_blocked(decoder_fetch_blocked)
 );
 
