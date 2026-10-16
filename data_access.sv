@@ -490,6 +490,38 @@ assign vipt_load_retire = vipt_load_wb_valid_r && !vipt_load_overlap_r &&
                           !vipt_load_replay_r.valid &&
                           !vipt_load_slow_busy;
 
+// The write-back token's valid, write mask and view hits with the kill
+// (q_flush || any_fault || interrupt_entry) applied last, as a synchronous
+// clear over the next value formed without it: q_flush is the taken-branch
+// decision (flags forward -> condition -> q_flush, fan-out ~580) and reached
+// these flops through the whole token update. Same next state as the single
+// always_ff below had (a later assignment wins: the kill over the slow
+// completion over the EX hit); tests/equiv/wb_kill_last.v proves it.
+wire vipt_wb_ex_done   = vipt_load_ex_r.valid && vipt_load_ex_probed_r &&
+                         vipt_load_ex_hit && !any_fault;
+wire vipt_wb_slow_done = vipt_load_slow_wait_r && !mem_servicing;
+wire vipt_wb_kill      = q_flush || any_fault || interrupt_entry;
+`Z486_KEEP_COMB wire        vipt_wb_valid_nk = vipt_wb_slow_done || vipt_wb_ex_done;
+`Z486_KEEP_COMB wire [7:0]  vipt_wb_wmask_nk =
+    vipt_wb_slow_done ? wb_wmask_of(vipt_load_slow_r.dst, vipt_load_slow_r.write_size) :
+    vipt_wb_ex_done   ? wb_wmask_of(vipt_load_ex_r.dst, vipt_load_ex_r.write_size) : 8'd0;
+`Z486_KEEP_COMB wire [31:0] vipt_wb_view_hit_nk =
+    vipt_wb_slow_done ? wb_view_hit_of(vipt_load_slow_r.dst, vipt_load_slow_r.write_size,
+                                       vipt_load_slow_r.is_alu) :
+    vipt_wb_ex_done   ? wb_view_hit_of(vipt_load_ex_r.dst, vipt_load_ex_r.write_size,
+                                       vipt_load_ex_r.is_alu) : 32'd0;
+always_ff @(posedge clk) begin
+    if (!reset_n || vipt_wb_kill) begin
+        vipt_load_wb_valid_r <= 1'b0;
+        vipt_load_wb_wmask_r <= 8'd0;
+        vipt_load_wb_view_hit_r <= 32'd0;
+    end else begin
+        vipt_load_wb_valid_r <= vipt_wb_valid_nk;
+        vipt_load_wb_wmask_r <= vipt_wb_wmask_nk;
+        vipt_load_wb_view_hit_r <= vipt_wb_view_hit_nk;
+    end
+end
+
 always_ff @(posedge clk) begin
     if (!reset_n) begin
         vipt_load_ex_r <= '0;
@@ -501,9 +533,6 @@ always_ff @(posedge clk) begin
         vipt_load_slow_wait_r <= 1'b0;
         vipt_slow_phys_ok_r <= 1'b0;
         vipt_slow_phys_r <= 32'd0;
-        vipt_load_wb_valid_r <= 1'b0;
-        vipt_load_wb_wmask_r <= 8'd0;
-        vipt_load_wb_view_hit_r <= 32'd0;
         vipt_load_ex_probed_r <= 1'b0;
         vipt_load_wb_data_r <= 32'd0;
         vipt_load_wb_ret_r <= 1'b0;
@@ -515,10 +544,6 @@ always_ff @(posedge clk) begin
         vipt_load_wb_alu_op_r <= 5'd0;
         vipt_load_overlap_r <= 1'b0;
     end else begin
-        vipt_load_wb_valid_r <= 1'b0;
-        vipt_load_wb_wmask_r <= 8'd0;
-        vipt_load_wb_view_hit_r <= 32'd0;
-
         if (vipt_load_wb_valid_r)
             vipt_load_overlap_r <= 1'b0;
         if (i_issue && d2_plain_load_overlap_ready)
@@ -569,12 +594,6 @@ always_ff @(posedge clk) begin
                     vipt_load_replay_r <= vipt_load_ex_r;
                 end
             end else if (vipt_load_ex_hit && !any_fault) begin
-                vipt_load_wb_valid_r <= 1'b1;
-                vipt_load_wb_wmask_r <= wb_wmask_of(vipt_load_ex_r.dst,
-                                                    vipt_load_ex_r.write_size);
-                vipt_load_wb_view_hit_r <= wb_view_hit_of(vipt_load_ex_r.dst,
-                                                          vipt_load_ex_r.write_size,
-                                                          vipt_load_ex_r.is_alu);
                 // A RET writes its new ESP through the load port and keeps
                 // the loaded target for the redirect.
                 vipt_load_wb_data_r <= vipt_load_ex_r.is_ret ? vipt_load_ex_r.ret_esp
@@ -644,12 +663,6 @@ always_ff @(posedge clk) begin
         // drops rather than treating the first fragment as a completed load.
         if (vipt_load_slow_wait_r && !mem_servicing) begin
             vipt_load_slow_wait_r <= 1'b0;
-            vipt_load_wb_valid_r <= 1'b1;
-            vipt_load_wb_wmask_r <= wb_wmask_of(vipt_load_slow_r.dst,
-                                                vipt_load_slow_r.write_size);
-            vipt_load_wb_view_hit_r <= wb_view_hit_of(vipt_load_slow_r.dst,
-                                                      vipt_load_slow_r.write_size,
-                                                      vipt_load_slow_r.is_alu);
             vipt_load_wb_data_r <= vipt_load_slow_r.is_ret ? vipt_load_slow_r.ret_esp
                                  : format_hardwired_load(
                 OPR_R, 2'd0, vipt_load_slow_r.mem_size,
@@ -668,9 +681,6 @@ always_ff @(posedge clk) begin
             vipt_load_replay_r.valid <= 1'b0;
             vipt_load_slow_req_r <= 1'b0;
             vipt_load_slow_wait_r <= 1'b0;
-            vipt_load_wb_valid_r <= 1'b0;
-            vipt_load_wb_wmask_r <= 8'd0;
-            vipt_load_wb_view_hit_r <= 32'd0;
             vipt_load_ex_probed_r <= 1'b0;
             vipt_load_overlap_r <= 1'b0;
         end
