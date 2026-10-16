@@ -75,6 +75,8 @@ module microsequencer
     output logic [50:0] uc_next,              // the word that becomes uc next cycle
     output logic [1:0]  uc_next_shift2_source,  // uc_next's SHIFT2 source class (port select last)
     output logic        uc_next_shift_captures, // uc_next captures a shift operand (port select last)
+    output logic [6:0]  uc_next_dest_a,       // port A's destination field (uc_next[30:24] when !pb_slot)
+    output logic [6:0]  uc_next_dest_b,       // port B's destination field (uc_next[30:24] when pb_slot)
     output logic [5:0]  uc_source_shift,
     output logic [3:0]  uc_shift_source_class,
     output logic [1:0]  uc_shift2_source,
@@ -128,6 +130,21 @@ wire rni_base = (((uc_opcode == 3'b000) || (uc_opcode == 3'b010)) &&
                 ((uc_opcode == 3'b001) && jump_taken_prev);
 assign i_rni = rni_base || jcc_fold_active || branch_ustep_rni ||
                load_wb_retire;
+
+// uaddr_next's terms above the port-B continuation: reset, the boundary
+// event, a fault (the arm is only selected when one of them is valid).
+function automatic logic [11:0] uaddr_next_hi(input logic rst_n, input logic bnd_v,
+                                              input logic [11:0] bnd_t,
+                                              input logic [11:0] flt_t);
+    uaddr_next_hi = !rst_n ? 12'h000 : bnd_v ? bnd_t : flt_t;
+endfunction
+// The last level of uaddr_next: the two late selects over the three arms.
+function automatic logic [11:0] uaddr_next_pick(input logic pb, input logic adv,
+                                                input logic [11:0] arm_pb,
+                                                input logic [11:0] arm_step,
+                                                input logic [11:0] arm_hold);
+    uaddr_next_pick = pb ? arm_pb : adv ? arm_step : arm_hold;
+endfunction
 
 seq_redirect_t exec_redirect;
 
@@ -204,22 +221,48 @@ always_comb begin
     end
 end
 
+// The next port-A address, in priority order (lowest first): hold, the
+// sequential step (seq_advance), an EX redirect, the port-B continuation
+// (pb_slot: an instruction issuing from port B continues at its next word),
+// a fault, the boundary event, reset (uaddr_next_reference below).
+// seq_advance and pb_slot are the D2 issue decision, the latest terms on the
+// ROM address (vipt hit -> d2_ready -> seq_advance and pb_issue -> pb_slot ->
+// rom_addr -> the M10K address register).  They are cofactored out: the three
+// arms below are formed from every other term, and the two late selects pick
+// among them in the last LUT level.  tests/equiv/uaddr_next_cofactor.v proves
+// the form equal to the priority chain for every input (shipped text).
+wire        uaddr_hi_v = !reset_n || boundary_redirect.valid || fault_redirect.valid;
+wire [11:0] uaddr_hi   = uaddr_next_hi(reset_n, boundary_redirect.valid, boundary_redirect.target,
+                                       fault_redirect.target);
+`Z486_KEEP_COMB wire [11:0] uaddr_arm_hold = uaddr_hi_v ? uaddr_hi :
+                                             exec_redirect.valid ? exec_redirect.target : uaddr;
+`Z486_KEEP_COMB wire [11:0] uaddr_arm_step = uaddr_hi_v ? uaddr_hi :
+                                             exec_redirect.valid ? exec_redirect.target : uaddr + 12'd1;
+`Z486_KEEP_COMB wire [11:0] uaddr_arm_pb   = uaddr_hi_v ? uaddr_hi : pb_entry_r + 12'd1;
+assign uaddr_next = uaddr_next_pick(pb_slot, seq_advance,
+                                    uaddr_arm_pb, uaddr_arm_step, uaddr_arm_hold);
+// synthesis translate_off
+logic [11:0] uaddr_next_reference;
 always_comb begin
-    uaddr_next = uaddr;
+    uaddr_next_reference = uaddr;
     if (seq_advance)
-        uaddr_next = uaddr + 12'd1;
+        uaddr_next_reference = uaddr + 12'd1;
     if (exec_redirect.valid)
-        uaddr_next = exec_redirect.target;
-    // An instruction issuing from port B continues at its next word.
+        uaddr_next_reference = exec_redirect.target;
     if (pb_slot)
-        uaddr_next = pb_entry_r + 12'd1;
+        uaddr_next_reference = pb_entry_r + 12'd1;
     if (fault_redirect.valid)
-        uaddr_next = fault_redirect.target;
+        uaddr_next_reference = fault_redirect.target;
     if (boundary_redirect.valid)
-        uaddr_next = boundary_redirect.target;
+        uaddr_next_reference = boundary_redirect.target;
     if (!reset_n)
-        uaddr_next = 12'h000;
+        uaddr_next_reference = 12'h000;
 end
+always @(posedge clk)
+    if (reset_n && (uaddr_next !== uaddr_next_reference))
+        $fatal(1, "microsequencer: cofactored uaddr_next %03x != priority chain %03x",
+               uaddr_next, uaddr_next_reference);
+// synthesis translate_on
 
 wire [11:0] rom_addr = uaddr_next;
 wire [50:0] rom_q;
@@ -262,6 +305,8 @@ ucode_rom microcode_rom_inst (
     .q_early(rom_q_early),
     .q_early_shift2_source(uc_next_shift2_source),
     .q_early_shift_captures(uc_next_shift_captures),
+    .q_dest_a(uc_next_dest_a),
+    .q_dest_b(uc_next_dest_b),
     .q(rom_q),
     .q_shift_source(uc_source_shift),
     .q_shift_source_class(uc_shift_source_class),
