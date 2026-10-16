@@ -1660,7 +1660,23 @@ endfunction
 
 // Predecode from uc_next (the microword that becomes uc next cycle); register on
 // the same enable as uc so dly_gpr_*_pre_r tracks decode_dly_gpr(uc_dest).
-wire [5:0] dly_gpr_pre   = decode_dly_gpr(uc_next[30:24]);
+// uc_next[30:24] is port B's field when pb_slot (the D2 issue decision, late)
+// and port A's otherwise.  The decode and the lanes below are formed on each
+// port with pb_slot selecting the result, so pb_slot is the last LUT level in
+// front of dly_gpr_*_pre_r instead of the first (the fitted pb_issue -> pb_slot
+// -> q_early -> decode -> lanes -> dly_gpr_lanes_pre_r path):
+// f(sel ? b : a) = sel ? f(b) : f(a), tests/equiv/dly_pre_split.v.
+wire [6:0] uc_next_dest_a;
+wire [6:0] uc_next_dest_b;
+wire [5:0] dly_gpr_pre_a = decode_dly_gpr(uc_next_dest_a);
+wire [5:0] dly_gpr_pre_b = decode_dly_gpr(uc_next_dest_b);
+wire [5:0] dly_gpr_pre   = pb_slot ? dly_gpr_pre_b : dly_gpr_pre_a;
+// synthesis translate_off
+always @(posedge clk)
+    if (reset_n && (dly_gpr_pre !== decode_dly_gpr(uc_next[30:24])))
+        $fatal(1, "z486: the split delay-slot predecode %b disagrees with uc_next's %b",
+               dly_gpr_pre, decode_dly_gpr(uc_next[30:24]));
+// synthesis translate_on
 reg        dly_gpr_we_pre_r;
 reg [2:0]  dly_gpr_sel_pre_r;
 reg [1:0]  dly_gpr_mode_pre_r;
@@ -1691,8 +1707,10 @@ always_ff @(posedge clk) begin
         dly_gpr_we_pre_r   <= dly_gpr_pre[5];
         dly_gpr_sel_pre_r  <= dly_gpr_pre[4:2];
         dly_gpr_mode_pre_r <= dly_gpr_pre[1:0];
-        dly_gpr_lanes_pre_r  <= dly_lanes_of(dly_gpr_pre[4:2], dly_gpr_pre[1:0]);
-        dly_gpr_onehot_pre_r <= 8'h01 << dly_gpr_pre[4:2];
+        dly_gpr_lanes_pre_r  <= pb_slot ? dly_lanes_of(dly_gpr_pre_b[4:2], dly_gpr_pre_b[1:0])
+                                        : dly_lanes_of(dly_gpr_pre_a[4:2], dly_gpr_pre_a[1:0]);
+        dly_gpr_onehot_pre_r <= pb_slot ? (8'h01 << dly_gpr_pre_b[4:2])
+                                        : (8'h01 << dly_gpr_pre_a[4:2]);
     end
 end
 // synthesis translate_off
@@ -3290,6 +3308,8 @@ microsequencer microsequencer_inst (
     .uc_next(uc_next),
     .uc_next_shift2_source(uc_next_shift2_source),
     .uc_next_shift_captures(uc_next_captures_shift_source),
+    .uc_next_dest_a(uc_next_dest_a),
+    .uc_next_dest_b(uc_next_dest_b),
     .uc_source_shift(uc_source_shift),
     .uc_shift_source_class(uc_shift_source_class),
     .uc_shift2_source(uc_shift2_source),
