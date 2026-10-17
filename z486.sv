@@ -301,6 +301,7 @@ wire [31:0]  vipt_load_wb_target_r;
 wire         vipt_load_wb_valid_r;
 wire [7:0]   vipt_load_wb_wmask_r;
 wire [31:0]  vipt_load_wb_view_hit_r;
+wire         vipt_load_wb_ah_r;
 // D2 instruction and issue
 wire         d2_vipt_ea_hazard;
 wire         d2_plain_load_overlap_ready;
@@ -2780,6 +2781,7 @@ data_access data_access_inst (
     .vipt_load_wb_target_r(vipt_load_wb_target_r),
     .vipt_load_wb_wmask_r(vipt_load_wb_wmask_r),
     .vipt_load_wb_view_hit_r(vipt_load_wb_view_hit_r),
+    .vipt_load_wb_ah_r(vipt_load_wb_ah_r),
     .vipt_load_wb_valid_r(vipt_load_wb_valid_r),
     // D2 instruction and issue
     .d2_vipt_ea_hazard(d2_vipt_ea_hazard),
@@ -3883,6 +3885,7 @@ data_unit data_unit_inst (
     .load_wb_size(vipt_load_wb_size_r),
     .load_wb_wmask(vipt_load_wb_wmask_r),
     .load_wb_view_hit(vipt_load_wb_view_hit_r),
+    .load_wb_ah(vipt_load_wb_ah_r),
     .load_wb_data(vipt_load_wb_data),
     .load_wb_is_alu(vipt_load_wb_is_alu_r),
     .load_wb_alu_op(vipt_load_wb_alu_op_r),

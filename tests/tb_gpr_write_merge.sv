@@ -74,6 +74,11 @@ module tb_gpr_write_merge;
         .hitv3_wb(wb_view_hit_of(v_wb, dst_wb, size_wb, wb_is_alu)),
         .hit_mem(mem_hit_of(v_mem, dst_mem, mode_mem)),
         .hit_shift(wb_view_hit_of(v_shift, dst_shift, size_shift, 1'b0)),
+        // The registered AH lane selects, formed the way their callers register
+        // them (producer_ah_reg.v): the shift token's only where it is visible.
+        .ah_shift(v_shift && (size_shift == 2'd0) && dst_shift[2]),
+        .ah_rom((size_rom == 2'd0) && dst_rom[2]),
+        .ah_wb((size_wb == 2'd0) && dst_wb[2]),
         .lanes_dly(mem_hit_of(1'b1, dst_dly, mode_dly)),
         .v_dly(v_dly), .dst_dly(dst_dly), .mode_dly(mode_dly), .data_dly(data_dly),
         .v_stos(v_stos), .size_stos(size_stos), .data_stos(data_stos),

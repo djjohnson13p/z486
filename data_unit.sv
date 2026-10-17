@@ -81,6 +81,7 @@ module data_unit
     input  logic [1:0]  load_wb_size,
     input  logic [7:0]  load_wb_wmask,             // load_wb_valid ? 8'h01 << load_wb_widx : 0, registered
     input  logic [31:0] load_wb_view_hit,          // its forwarding-view hits per GPR byte, registered
+    input  logic        load_wb_ah,                 // its AH lane select (producer-3 pv3f), registered
     input  logic [31:0] load_wb_data,
     input  logic        load_wb_is_alu,          // Registered memory operand feeds shared ALU
     input  logic [4:0]  load_wb_alu_op,
@@ -202,6 +203,7 @@ logic       recipe_memory_killed;
 logic [31:0] recipe_memory_hit_r;       // producer 1's merge hits, see mem_hit_of
 logic [31:0] recipe_shift_hit_r;        // producer 0's merge hits, see shift_hit_of
 logic [7:0]  recipe_shift_wmask_r;      // its pend_write_mask one-hot
+logic        recipe_shift_ah_r;         // its AH lane select, see shift_ah_of
 logic       recipe_shift_killed;
 assign dbg_recipe_mem_killed   = recipe_memory_killed;
 assign dbg_recipe_shift_killed = recipe_shift_killed;
@@ -405,11 +407,21 @@ wire [31:0] ea_index_sel_value;
 // whose bytes 0/1 are AL..BL / AH..BH), and the IRF register countr[2:0].
 wire [31:0] ex_dst_full, ex_dst_byte, ex_src_full, ex_src_byte, ex_irf_full;
 
+// gpr_write_merge's producer-2 (ROM slot) AH lane select: op_size_is0 is the
+// registered op_size == 0 decode (z486 op_size_dec_reg.v) and dst_reg_sel_r is
+// the registered destination, so pv2's size compare is already off the merge
+// cone.  A dedicated flop for the single AND
+// was rejected: op_size_du and dst_reg_sel_r are written on independent edges
+// (z486's i_issue/uc_exec and this module's instr_start), so one flop cannot
+// track both without a new port, and the remaining AND is one LUT.
+wire ah_rom = op_size_is0 && dst_reg_sel_r[2];
+
 gpr_write_merge gpr_merge (
     .cur({edi, esi, ebp, esp, ebx, edx, ecx, eax}),
 
     .v_shift(pr_shift_valid),
     .hit_shift(recipe_shift_hit_r),
+    .ah_shift(recipe_shift_ah_r),
     .dst_shift(recipe_shift_write.dst),
     .size_shift(recipe_shift_write.size),
     .data_shift(recipe_shift_data),
@@ -423,6 +435,7 @@ gpr_write_merge gpr_merge (
     .v_rom(pr_rom_valid),
     .dst_rom(dst_reg_sel_r),
     .size_rom(op_size),
+    .ah_rom(ah_rom),
     .data_rom(opr_r),
 
     .v_wb(load_wb_valid),
@@ -434,6 +447,7 @@ gpr_write_merge gpr_merge (
     // load_wb_commit_data is load_wb_data: the M3 ALU stays off the views.
     .fwd_wb(load_wb_data),
     .hitv3_wb(load_wb_view_hit),
+    .ah_wb(load_wb_ah),
 
     .v_dly(dly_gpr_forward.valid),
     .lanes_dly(dly_gpr_lanes),
@@ -1144,6 +1158,11 @@ function automatic [31:0] shift_hit_of(input [2:0] dst, input [1:0] size);
         shift_hit_of = {28'h0, be} << {r, 2'b00};
     end
 endfunction
+// Producer 0's AH lane select (gpr_write_merge lane_of's `ah`): the shift
+// token's lane 1 is data[7:0] for a byte write to AH.
+function automatic logic shift_ah_of(input logic [2:0] dst, input logic [1:0] size);
+    shift_ah_of = (size == 2'd0) && dst[2];
+endfunction
 wire       recipe_shift_kill = load_wb_valid && !recipe_commit_cancel &&
                                (recipe_shift_widx == load_wb_widx);
 wire       recipe_shift_load = recipe_rni && exec && !recipe_commit_cancel &&
@@ -1152,15 +1171,18 @@ always_ff @(posedge clk) begin
     if (!reset_n) begin
         recipe_shift_hit_r   <= 32'h0;
         recipe_shift_wmask_r <= 8'h0;
+        recipe_shift_ah_r    <= 1'b0;
     end else if (pipeline_advance) begin
         recipe_shift_hit_r   <= recipe_shift_load ? shift_hit_of(dst_reg_sel_r, op_size) : 32'h0;
         recipe_shift_wmask_r <= recipe_shift_load
                               ? (8'h01 << ((op_size == 2'd0) ? {1'b0, dst_reg_sel_r[1:0]}
                                                              : dst_reg_sel_r))
                               : 8'h0;
+        recipe_shift_ah_r    <= recipe_shift_load ? shift_ah_of(dst_reg_sel_r, op_size) : 1'b0;
     end else if (recipe_shift_kill) begin
         recipe_shift_hit_r   <= 32'h0;
         recipe_shift_wmask_r <= 8'h0;
+        recipe_shift_ah_r    <= 1'b0;
     end
 end
 // synthesis translate_off
@@ -1168,9 +1190,12 @@ always @(posedge clk)
     if (reset_n && ((recipe_shift_hit_r !==
                      (pr_shift_valid ? shift_hit_of(recipe_shift_write.dst, recipe_shift_write.size) : 32'h0)) ||
                     (recipe_shift_wmask_r !==
-                     (pr_shift_valid ? (8'h01 << recipe_shift_widx) : 8'h00))))
-        $fatal(1, "data_unit: shift-token hits %h / mask %b disagree with the token",
-               recipe_shift_hit_r, recipe_shift_wmask_r);
+                     (pr_shift_valid ? (8'h01 << recipe_shift_widx) : 8'h00)) ||
+                    (recipe_shift_ah_r !==
+                     (pr_shift_valid
+                      ? shift_ah_of(recipe_shift_write.dst, recipe_shift_write.size) : 1'b0))))
+        $fatal(1, "data_unit: shift-token hits %h / mask %b / AH %b disagree with the token",
+               recipe_shift_hit_r, recipe_shift_wmask_r, recipe_shift_ah_r);
 // synthesis translate_on
 
 // opr_fast_commit needs no destination: once OPR_R is replaced, the token's

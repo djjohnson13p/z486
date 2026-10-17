@@ -199,6 +199,9 @@ module tb_load_waw;
                                                   ? {1'b0, load_wb_dst[1:0]}
                                                   : load_wb_dst)) : 8'h00),
         .load_wb_view_hit(wb_view_hit_of(load_wb_valid, load_wb_dst, load_wb_size, load_wb_is_alu)),
+        // data_access registers the AH lane select beside the write-back's
+        // dst/size (vipt_load_wb_ah_r), so it is the decode every cycle.
+        .load_wb_ah((load_wb_size == 2'd0) && load_wb_dst[2]),
         .load_wb_data(load_wb_data),
         .load_wb_is_alu(load_wb_is_alu),
         .load_wb_alu_op(load_wb_alu_op),

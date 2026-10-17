@@ -68,6 +68,11 @@ module gpr_write_merge
     // Producer 0's hit per GPR byte [r*4 + b], registered by the caller:
     // v_shift && byte b of register dst_norm(0) in be_of_size(size_shift, dst_shift[2]).
     input  logic [31:0]  hit_shift,
+    // Producer 0's AH lane select, registered by the caller on the edges
+    // size_shift/dst_shift change: (size_shift == 0) && dst_shift[2] whenever
+    // the token is visible, else 0 (tests/equiv/producer_ah_reg.v).  It feeds
+    // pv0's lane-1 choice so the size/dst decode is not in front of the merge.
+    input  logic         ah_shift,
 
     // Producer 1: deferred memory (hardwired load) token.
     input  logic         v_mem,
@@ -83,6 +88,10 @@ module gpr_write_merge
     input  logic [2:0]   dst_rom,
     input  logic [1:0]   size_rom,
     input  logic [31:0]  data_rom,      // OPR_R
+    // Producer 2's AH lane select, formed by the caller from its registered
+    // size decode and destination: (size_rom == 0) && dst_rom[2] every cycle.
+    // It feeds pv2's lane-1 choice so no size compare is in front of the merge.
+    input  logic         ah_rom,
 
     // Producer 3: direct-load write-back.
     input  logic         v_wb,
@@ -100,6 +109,11 @@ module gpr_write_merge
     // with the write-back: v_wb && !wb_is_alu && byte b of register r in its
     // lanes (the hit3 && !wb_is_alu below, fused against it).
     input  logic [31:0]  hitv3_wb,
+    // Producer 3's AH lane select, registered by the caller beside dst_wb/
+    // size_wb: (size_wb == 0) && dst_wb[2] every cycle
+    // (tests/equiv/producer_ah_reg.v).  It feeds pv3f's lane-1 choice so the
+    // vipt_load_wb_size_r/dst_r decode is not in front of the view merge.
+    input  logic         ah_wb,
 
     // Producer 4: delay-slot bypass (views only).
     input  logic         v_dly,
@@ -301,16 +315,20 @@ function automatic logic [31:0] lane_of(input logic ah, input logic [31:0] data)
 endfunction
 // Quartus 17 cannot part-select the result of a function call, so the values
 // are named wires.
-wire [31:0] pv0 = lane_of((size_shift == 2'd0) && dst_shift[2], data_shift);
+// The AH lane selects (the size==0 && dst[2] term of lane_of) are the caller's
+// registered flags for the shift token, the ROM slot and the write-back view,
+// so their size/dst decode is not in front of the merge.  The other producers'
+// selects stay a decode of the live (already registered) size/mode fields.
+wire [31:0] pv0 = lane_of(ah_shift, data_shift);
 wire [31:0] pv1 = lane_of(mode_mem == EA_FWD_BHI, data_mem);
-wire [31:0] pv2 = lane_of((size_rom == 2'd0) && dst_rom[2], data_rom);
+wire [31:0] pv2 = lane_of(ah_rom, data_rom);
 wire [31:0] pv3 = lane_of((size_wb == 2'd0) && dst_wb[2], data_wb);
 wire [31:0] pv4 = lane_of(mode_dly == EA_FWD_BHI, data_dly);
 wire [31:0] pv5 = data_stos;
 wire [31:0] pv6 = data_sigsrc;
 wire [31:0] pv7 = data_esp;
 // Producer 3 as the views see it (see fwd_wb): equal to pv3 wherever hitv3.
-wire [31:0] pv3f = lane_of((size_wb == 2'd0) && dst_wb[2], fwd_wb);
+wire [31:0] pv3f = lane_of(ah_wb, fwd_wb);
 // synthesis translate_off
 wire [31:0] pv3f_aligned = align_of_size(size_wb, dst_wb[2], fwd_wb);
 always_comb begin : producer_lane_fuse
@@ -332,6 +350,19 @@ always_comb begin : producer_lane_fuse
         if (v_wb && producer_lane(3)[bb] && (pv3f[bb*8 +: 8] !== pv3f_aligned[bb*8 +: 8]))
             $fatal(1, "GPR MERGE PV3F: lane %0d %02x, aligned %02x", bb,
                    pv3f[bb*8 +: 8], pv3f_aligned[bb*8 +: 8]);
+end
+
+// The registered AH lane selects must equal the size/dst decode of the
+// producers they belong to (tests/equiv/producer_ah_reg.v): the shift token's
+// only where it is visible, the ROM slot's and the write-back's every cycle,
+// so pv0/pv2/pv3f are bit-identical to the live-form lane_of.
+always_comb begin : producer_ah_fuse
+    if (ah_shift !== (v_shift && (size_shift == 2'd0) && dst_shift[2]))
+        $fatal(1, "GPR MERGE AH SHIFT %b is not the visible shift token's", ah_shift);
+    if (ah_rom !== ((size_rom == 2'd0) && dst_rom[2]))
+        $fatal(1, "GPR MERGE AH ROM %b is not the ROM slot's", ah_rom);
+    if (ah_wb !== ((size_wb == 2'd0) && dst_wb[2]))
+        $fatal(1, "GPR MERGE AH WB %b is not the write-back's", ah_wb);
 end
 // synthesis translate_on
 

@@ -120,6 +120,11 @@ module data_access
     // an M3 ALU result, register r = norm(dst, size), byte b in its lanes
     // (gpr_write_merge hitv3), registered with the write-back.
     output logic [31:0]             vipt_load_wb_view_hit_r,
+    // The write-back's AH lane select for gpr_write_merge's pv3f:
+    // (vipt_load_wb_size_r == 0) && vipt_load_wb_dst_r[2], loaded on exactly
+    // the edges vipt_load_wb_dst_r/_size_r are, from the same sources, so it
+    // equals that decode every cycle (tests/equiv/producer_ah_reg.v).
+    output logic                    vipt_load_wb_ah_r,
     // D2 instruction and issue
     input  logic                    d2_vipt_ea_hazard,
     // An older deferred memory token owns this load's destination and its
@@ -540,6 +545,7 @@ always_ff @(posedge clk) begin
         vipt_load_wb_dst_r <= 3'd0;
         vipt_load_wb_dst_onehot_r <= 8'd0;
         vipt_load_wb_size_r <= 2'd2;
+        vipt_load_wb_ah_r <= 1'b0;
         vipt_load_wb_is_alu_r <= 1'b0;
         vipt_load_wb_alu_op_r <= 5'd0;
         vipt_load_overlap_r <= 1'b0;
@@ -605,6 +611,8 @@ always_ff @(posedge clk) begin
                 vipt_load_wb_dst_r <= vipt_load_ex_r.dst;
                 vipt_load_wb_dst_onehot_r <= vipt_load_ex_r.dst_onehot;
                 vipt_load_wb_size_r <= vipt_load_ex_r.write_size;
+                vipt_load_wb_ah_r <= (vipt_load_ex_r.write_size == 2'd0) &&
+                                     vipt_load_ex_r.dst[2];
                 vipt_load_wb_is_alu_r <= vipt_load_ex_r.is_alu;
                 vipt_load_wb_alu_op_r <= vipt_load_ex_r.alu_op;
             end else if (!any_fault) begin
@@ -672,6 +680,8 @@ always_ff @(posedge clk) begin
             vipt_load_wb_dst_r <= vipt_load_slow_r.dst;
             vipt_load_wb_dst_onehot_r <= vipt_load_slow_r.dst_onehot;
             vipt_load_wb_size_r <= vipt_load_slow_r.write_size;
+            vipt_load_wb_ah_r <= (vipt_load_slow_r.write_size == 2'd0) &&
+                                 vipt_load_slow_r.dst[2];
             vipt_load_wb_is_alu_r <= vipt_load_slow_r.is_alu;
             vipt_load_wb_alu_op_r <= vipt_load_slow_r.alu_op;
         end
@@ -708,6 +718,9 @@ always_ff @(posedge clk) begin
                                                            vipt_load_wb_is_alu_r)
                                           : 32'h0)))
         $fatal(1, "VIPT WB view hits %h are not the valid write-back's", vipt_load_wb_view_hit_r);
+    if (reset_n && (vipt_load_wb_ah_r !==
+                    ((vipt_load_wb_size_r == 2'd0) && vipt_load_wb_dst_r[2])))
+        $fatal(1, "VIPT WB AH select %b is not the write-back's", vipt_load_wb_ah_r);
 end
 // synthesis translate_on
 
