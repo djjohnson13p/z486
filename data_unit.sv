@@ -2095,6 +2095,8 @@ mul_div mul_div_inst (
     .tmpb(tmpb),
     .tmpd(tmpd),
     .dest_value(dest_value),
+    .gate_detect(gate_detect),
+    .desc_raw_hi(desc_raw_hi),
     .result(muldiv_result),
     .sigma_write(muldiv_sigma_write),
     .sigma_value(muldiv_sigma_value),

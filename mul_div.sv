@@ -18,6 +18,8 @@ module mul_div
     input  logic [31:0] tmpb,
     input  logic [31:0] tmpd,
     input  logic [31:0] dest_value,
+    input  logic        gate_detect,        // x87 descriptor gate: data_unit loads desc_raw_hi into TMPB
+    input  logic [31:0] desc_raw_hi,        // that descriptor's high dword
 
     output logic [31:0] result,
     output logic        sigma_write,        // Private datapath writes SIGMA
@@ -50,6 +52,8 @@ logic [5:0]  div_flags_r;
 assign div_flags = div_flags_r;
 logic [31:0] div_divisor_masked;
 logic [31:0] div_divisor_abs;
+logic [31:0] divisor_abs_r;              // div_divisor_abs, registered on the TMPB / operand-size edges
+logic [1:0]  op_size_r;                  // op_size, to notice an operand-size change
 logic        div_dividend_neg;
 logic        div_divisor_neg;
 logic [31:0] prediv_q_in;
@@ -91,7 +95,18 @@ always_ff @(posedge clk) begin
         idiv_divisor_neg    <= 1'b0;
         div_first_cycle     <= 1'b0;
         div_flags_r         <= 6'd0;
+        divisor_abs_r       <= 32'd0;
+        op_size_r           <= 2'd0;
     end else begin
+        // divisor_abs_r tracks div_abs_by_size(tmpb, op_size) on the edges its
+        // two sources change: the TMPB writes below (which win), and an
+        // operand-size change, where the live f(tmpb, op_size) is the new
+        // value.  z486 loads op_size_du at instruction start and the divide
+        // microcode never rewrites it, so through the window div_overflow
+        // evaluates in, op_size == op_size_r.
+        op_size_r <= op_size;
+        if (op_size != op_size_r)
+            divisor_abs_r <= div_abs_by_size(tmpb, op_size);
         if (instr_start)
             dsp_completed <= 1'b0;
         else if (dsp_done)
@@ -135,9 +150,37 @@ always_ff @(posedge clk) begin
                 result_r <= div_iter_q_next;
             else if (dest == DEST_MDTMP4)
                 result_r <= dest_value;
+
+            // The divisor's absolute value, registered on the edges data_unit
+            // writes TMPB, in the same priority (DEST_TMPB first, then
+            // gate_detect, then this unit's PREDIV write-back last), plus the
+            // op_size-change refresh above, so divisor_abs_r ==
+            // div_abs_by_size(tmpb, op_size_r) every cycle and the live
+            // negate+mask leaves the div_overflow / ROM-address cone.  f =
+            // abs∘mask is idempotent, so the PREDIV write of f(tmpb) back into
+            // tmpb leaves the register at the same value; tests/equiv/
+            // div_abs_reg.v proves the invariant and the lemma.
+            if (dest == DEST_TMPB)
+                divisor_abs_r <= div_abs_by_size(dest_value, op_size);
+            if (gate_detect)
+                divisor_abs_r <= div_abs_by_size(desc_raw_hi, op_size);
+            if (aluop == ALUJMP_PREDIV)
+                divisor_abs_r <= div_divisor_abs;
         end
     end
 end
+
+// synthesis translate_off
+// The registered divisor abs must equal the live form of the TMPB/op_size pair
+// it tracks, every cycle; the PREDIV write of f(TMPB) back into TMPB, the
+// DEST_TMPB and gate_detect loads and an operand-size change are all checked
+// here too.  (op_size_r is the size the register is keyed to; div_overflow
+// reads it at the live op_size, equal to op_size_r through the divide window.)
+always @(posedge clk)
+    if (reset_n && (divisor_abs_r !== div_abs_by_size(tmpb, op_size_r)))
+        $fatal(1, "mul_div: divisor_abs_r %08x != live abs %08x (tmpb %08x, size %0d)",
+               divisor_abs_r, div_abs_by_size(tmpb, op_size_r), tmpb, op_size_r);
+// synthesis translate_on
 
 always_comb begin
     logic [63:0] full64;
@@ -145,8 +188,7 @@ always_comb begin
     div_dividend_neg = div_sign_bit(sigma, op_size);
     div_divisor_neg = div_sign_bit(tmpb, op_size);
     div_divisor_masked = div_op_by_size(DIV_OP_MASK, tmpb, op_size);
-    div_divisor_abs = div_divisor_neg ?
-        div_op_by_size(DIV_OP_NEGATE, tmpb, op_size) : div_divisor_masked;
+    div_divisor_abs = div_abs_by_size(tmpb, op_size);
     prediv_q_in = div_op_by_size(DIV_OP_MASK, divtmp, op_size);
     prediv_r_in = div_op_by_size(DIV_OP_MASK, sigma, op_size);
 
@@ -184,7 +226,7 @@ always_comb begin
     use_prediv = aluop == ALUJMP_PREDIV;
     q_in = use_prediv ? prediv_q_in : divtmp;
     r_in = use_prediv ? prediv_r_in : sigma;
-    d_in = use_prediv ? div_divisor_abs : div_divisor_masked;
+    d_in = use_prediv ? divisor_abs_r : div_divisor_masked;
     r_nonneg_in = use_prediv ? 1'b1 : div_r_nonneg;
     div7_calc(q_in, r_in, d_in, r_nonneg_in, op_size,
               div_iter_q_next, div_iter_r_next, div_iter_r_nonneg_next,
@@ -206,7 +248,7 @@ always_comb begin
            (div_divisor_masked == 32'd0 ||
             div_op_by_size(DIV_OP_MASK, sigma, op_size) >= div_divisor_masked)) ||
           (aluop == ALUJMP_PREDIV &&
-           (div_divisor_abs == 32'd0 || prediv_r_in >= div_divisor_abs)))) ||
+           (divisor_abs_r == 32'd0 || prediv_r_in >= divisor_abs_r)))) ||
         (aluop == ALUJMP_IDIV2 &&
          (signs_differ ? quotient > signed_max : quotient >= signed_max)));
 end
@@ -266,6 +308,19 @@ function automatic logic div_sign_bit(input [31:0] value, input [1:0] size);
         2'd0: div_sign_bit = value[7];
         2'd1: div_sign_bit = value[15];
         default: div_sign_bit = value[31];
+    endcase
+endfunction
+
+// The masked absolute value of a divisor at the operand size: the value the
+// original div_divisor_abs formed as sign ? mask(~value + 1) : mask(value).  A
+// named function so tests/equiv/div_abs_reg.v can paste the shipped text.
+function automatic logic [31:0] div_abs_by_size(input logic [31:0] value, input logic [1:0] size);
+    logic [31:0] v;
+    v = div_sign_bit(value, size) ? (~value) + 32'h1 : value;
+    case (size)
+        2'd0: div_abs_by_size = {24'h0, v[7:0]};
+        2'd1: div_abs_by_size = {16'h0, v[15:0]};
+        default: div_abs_by_size = v;
     endcase
 endfunction
 
