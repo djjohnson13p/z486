@@ -871,9 +871,20 @@ ea_dec_t    skel_load_ea_dec; // Its EA decode, latched by the Address Unit
 dec_entry_t i;                // Current instruction (latched at i_issue; written far below)
 
 // Hold a successor whose base/index (or ESP) is a pending direct-load destination.
-wire [7:0] d2_ea_read_mask = i_bus.ea_base_onehot |
-                             i_bus.ea_index_onehot |
-                             (i_bus.stack_op ? 8'h10 : 8'h00);
+// Only an instruction that forms an address can read the EA one cycle early:
+// dec_ea_onehots ignores mod, so a register-direct operand (test al,al,
+// cmp cl,al, movzx ebx,al) is reported with the ModR/M rm field as its "EA
+// base" even though it has no EA.  Such a consumer reads its data operand in EX
+// from the forwarded load write-back (data_unit's gpr_ex_view) and must not be
+// held; the memory forms keep the i486 one-cycle pointer interlock.
+wire d2_mem_form = i_bus.stack_op ||
+                   (i_bus.has_modrm && !i_bus.has_moffs &&
+                    (i_bus.modrm[7:6] != 2'b11));
+wire [7:0] d2_ea_read_mask = d2_mem_form
+    ? (i_bus.ea_base_onehot |
+       i_bus.ea_index_onehot |
+       (i_bus.stack_op ? 8'h10 : 8'h00))
+    : 8'h00;
 // Plain-load WB data forwards into the D2 EA reader; ALU-load results do not.
 wire [7:0] vipt_load_wb_alu_dst_mask =
     (vipt_load_wb_valid_r && vipt_load_wb_is_alu_r)
