@@ -113,6 +113,22 @@ function automatic logic [2:0] onehot_idx(input logic [7:0] onehot);
                  onehot[7] ? 3'd7 : 3'd0;
 endfunction
 
+// Relocation as a 3:2 carry-save stage. Folding the segment base into the EA
+// sum removes one 32-bit carry chain from the linear path at zero cycles:
+//   a + b + s == (a^b^s) + (((a&b)|(b&s)|(a&s)) << 1)   (mod 2^32)
+// is exact for every operand, and the final carry-propagate adder is the one
+// the second '+' used to be. ea_offset_full still forms effective_addr in
+// parallel; POP-LIN FUSE below checks the fused relocation every issuing cycle.
+function automatic logic [31:0] relocate_csa32(
+    input logic [31:0] a,
+    input logic [31:0] b,
+    input logic [31:0] s
+);
+    automatic logic [31:0] carry;
+    carry = (a & b) | (b & s) | (a & s);
+    relocate_csa32 = (a ^ b ^ s) + {carry[30:0], 1'b0};
+endfunction
+
 wire [63:0] ea_terms = ea_scale_operands(
     ea_base_value, ea_index_value, ea_scale_r, ea_scale_to_base_r);
 wire [31:0] ea_term_a_live = ea_terms[63:32];
@@ -128,7 +144,10 @@ wire [31:0] ea_add_b = split_ea_use ? displacement : ea_simple_b;
 wire [31:0] ea_offset_full = ea_add_a + ea_add_b;
 wire [31:0] effective_addr = ea_is_16bit_r
                            ? {16'd0, ea_offset_full[15:0]} : ea_offset_full;
-wire [31:0] linear32 = ea_offset_full + issue_seg_base;
+wire [31:0] linear32 = relocate_csa32(ea_add_a, ea_add_b, issue_seg_base);
+// The 16-bit arm cannot be folded: it wraps (a + b) at 16 bits BEFORE the
+// segment base is added, so the base sees only that add's carry, not the
+// three-term sum's; it keeps its own shallow 16-bit add.
 wire [31:0] linear16 = {16'd0, ea_offset_full[15:0]} + issue_seg_base;
 wire [31:0] effective_linear = (ea_is_16bit_r || !issue_eff_mask)
                              ? linear16 : linear32;
