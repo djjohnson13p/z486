@@ -487,7 +487,18 @@ wire [63:0] k1q_flush_next = d1_window(queue_fl, {2'b00, spec_off[3:2]}, spec_of
 wire [63:0] k1q_step_nf = d1_window(queue_nf, k1p_u_word, k1p_u_boff);
 wire [63:0] k1q_preread_nf = (seed_now || k1p_step_ok) ? k1q_step_nf : k1q_hold_next;
 wire [63:0] k1q_preread_next = q_flush ? k1q_flush_next : k1q_preread_nf;
-assign k1q_early = k1q_preread_next;
+// The entry ROM reads only the window's first byte. On a flush that byte is
+// always the target line's byte at spec_off (the window's first word is slot
+// spec_off[3:2], which queue_fl always seeds from the line), so it is formed
+// from both line candidates and the late spec_data_now (an icache hit's
+// pf_ack_edge) picks it last, instead of selecting 128 line bits before the
+// queue_fl seed, the word and byte aligners. tests/equiv/flush_byte0_late.v
+// proves it equal to k1q_flush_next[7:0] for every input.
+wire [7:0] flush_byte0_ack  = pf_rdata[{spec_off, 3'b000} +: 8];
+wire [7:0] flush_byte0_held = spec_line[{spec_off, 3'b000} +: 8];
+wire [7:0] k1q_flush_byte0  = spec_data_now ? flush_byte0_ack : flush_byte0_held;
+assign k1q_early = {k1q_preread_next[63:8],
+                    q_flush ? k1q_flush_byte0 : k1q_preread_nf[7:0]};
 
 // q_flush gives both cursor views the same redirected origin. Otherwise the
 // real cursor advances exactly when structural preread and committed advance
