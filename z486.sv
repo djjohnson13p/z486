@@ -3660,13 +3660,21 @@ always_ff @(posedge clk) begin
                         3'd5: DR7 <= dr7_value(external_dest_value);
                         default: ;
                     endcase
-                if (COUNTR[5:3] == 3'b100)
+                // Only a selector-writing bus op stores the selector. SAR/SLIM
+                // write descriptor fields, and SPTR (uc 5A7, the LFS/LGS
+                // protected-mode load) only aims DESPTR at the target's
+                // descriptor before the checks: its SRC_NEG1 value is not a
+                // selector, and storing it left FS/GS = FFFFh whenever the load
+                // then faulted (#NP/#GP), where a 486 keeps the old selector.
+                // The successful load stores the selector at uc 5AA (SDEL).
+                if (COUNTR[5:3] == 3'b100 && uc_buscode != BUSOP_SAR &&
+                    uc_buscode != BUSOP_SLIM && uc_buscode != BUSOP_SPTR)
                 case (COUNTR[5:0])
-                    6'h20: if (uc_buscode != BUSOP_SAR && uc_buscode != BUSOP_SLIM) ES <= external_dest_value[15:0];
-                    6'h22: if (uc_buscode != BUSOP_SAR && uc_buscode != BUSOP_SLIM) SS <= external_dest_value[15:0];
-                    6'h23: if (uc_buscode != BUSOP_SAR && uc_buscode != BUSOP_SLIM) DS <= external_dest_value[15:0];
-                    6'h24: if (uc_buscode != BUSOP_SAR && uc_buscode != BUSOP_SLIM) FS <= external_dest_value[15:0];
-                    6'h25: if (uc_buscode != BUSOP_SAR && uc_buscode != BUSOP_SLIM) GS <= external_dest_value[15:0];
+                    6'h20: ES <= external_dest_value[15:0];
+                    6'h22: SS <= external_dest_value[15:0];
+                    6'h23: DS <= external_dest_value[15:0];
+                    6'h24: FS <= external_dest_value[15:0];
+                    6'h25: GS <= external_dest_value[15:0];
                     default: ;
                 endcase
             end
