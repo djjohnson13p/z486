@@ -149,8 +149,15 @@ wire [31:0] linear32 = relocate_csa32(ea_add_a, ea_add_b, issue_seg_base);
 // segment base is added, so the base sees only that add's carry, not the
 // three-term sum's; it keeps its own shallow 16-bit add.
 wire [31:0] linear16 = {16'd0, ea_offset_full[15:0]} + issue_seg_base;
-wire [31:0] effective_linear = (ea_is_16bit_r || !issue_eff_mask)
-                             ? linear16 : linear32;
+// Below bit 16 the two arms are one sum: linear16's low half is
+// ((a + b) mod 2^16 + s) mod 2^16 == (a + b + s) mod 2^16, linear32's low
+// half. So the low half (the D-cache set index and the in-page offset) always
+// comes from the folded sum and only the high half selects between the arms;
+// the 16-bit arm's serial add is left to the page bits.
+// tests/equiv/addr_csa_low16.v proves it equal to the two-arm select.
+wire        effective_linear16 = ea_is_16bit_r || !issue_eff_mask;
+wire [31:0] effective_linear = {effective_linear16 ? linear16[31:16] : linear32[31:16],
+                                linear32[15:0]};
 // Alignment participates in same-cycle VIPT admission. It depends only on the
 // low address bits, so keep both full-width EA and relocation adders out of it.
 wire [3:0] issue_linear_low_sum = {2'b0, ea_add_a[1:0]} +
