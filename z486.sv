@@ -592,6 +592,7 @@ wire        uc_p_wio;
 wire [11:0] prot_jump_addr;         // Protection-unit microcode redirect
 wire        gp_fault_trigger;       // Segmentation/protection #GP request
 wire        div_overflow;           // Data Unit divide exception request
+wire        div_overflow_cond;      // div_overflow without uc_exec
 
 wire seq_advance;
 seq_redirect_t seq_fault_redirect;
@@ -3101,6 +3102,7 @@ wire gate_detect_now;
 wire instr_eip_written;
 wire misc2_flag;
 wire recipe_fallback_taken;
+wire recipe_fallback_cond;
 event_control #(.ENABLE_X87(ENABLE_X87)) event_control_inst (
     // Clock and reset
     .clk(clk),
@@ -3186,6 +3188,7 @@ event_control #(.ENABLE_X87(ENABLE_X87)) event_control_inst (
     .seq_fault_redirect(seq_fault_redirect),
     .seq_boundary_redirect(seq_boundary_redirect),
     .recipe_fallback_taken(recipe_fallback_taken),
+    .recipe_fallback_cond(recipe_fallback_cond),
     .gate_detect_now(gate_detect_now),
     .gate_detect_cond(gate_detect_cond),
     .double_fault_start(double_fault_start),
@@ -3345,6 +3348,14 @@ microsequencer microsequencer_inst (
     .div_redirect_valid(div_overflow),
     .div_redirect_target(double_fault_start ? UADDR_DOUBLE_FAULT : UADDR_DIVIDE_ERROR),
     .gate_redirect(gate_detect_now),
+    // The same redirects' conditions without uc_exec (each *_valid above is
+    // uc_exec && its condition, or for the recipe also rmw_fallback_delay_r):
+    // the ROM address takes uc_exec in its last select.
+    .prot_redirect_cond(prot_result_now && prot_jump_valid),
+    .recipe_redirect_cond(recipe_fallback_cond),
+    .recipe_redirect_hold(rmw_fallback_delay_r),
+    .div_redirect_cond(div_overflow_cond),
+    .gate_redirect_cond(gate_detect_cond),
     .fault_redirect(seq_fault_redirect),
     .boundary_redirect(seq_boundary_redirect),
     // End of instruction: RNI, synthetic RNIs and the delay slot
@@ -3978,6 +3989,7 @@ data_unit data_unit_inst (
     .shift_result(shift_result),
     .muldiv_result(muldiv_result),
     .div_overflow(div_overflow),
+    .div_overflow_cond(div_overflow_cond),
     .alu_src(alu_src),
     .alu_src_hold(alu_src_r),
     .source_value_live(source_value_live),

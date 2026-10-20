@@ -165,6 +165,7 @@ module data_unit
     output logic [31:0] shift_result,
     output logic [31:0] muldiv_result,
     output logic        div_overflow,
+    output logic        div_overflow_cond,
     output logic [31:0] alu_src,
     output logic [31:0] alu_src_hold,             // Registered ALU source operand
     output logic [31:0] source_value_live,        // Selected microcode source value
@@ -2104,6 +2105,7 @@ mul_div mul_div_inst (
     .tmpb_value(muldiv_tmpb_value),
     .counter_early_exit(muldiv_counter_early_exit),
     .div_overflow(div_overflow),
+    .div_overflow_cond(div_overflow_cond),
     .div_quotient_zero(muldiv_quotient_zero),
     .div_flags(muldiv_div_flags),
     .mul_flag_overflow(muldiv_flag_overflow)

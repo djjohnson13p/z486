@@ -28,6 +28,7 @@ module mul_div
     output logic [31:0] tmpb_value,
     output logic        counter_early_exit, // DSP completion terminates repeat loop
     output logic        div_overflow,
+    output logic        div_overflow_cond,  // div_overflow without exec (== div_overflow when exec)
     output logic        div_quotient_zero,
     output logic [5:0]  div_flags,          // {OF,SF,ZF,AF,PF,CF} of the last divide step
     output logic        mul_flag_overflow
@@ -242,7 +243,7 @@ always_comb begin
     signed_max = op_size == 2'd0 ? 32'h0000_0080 :
                  op_size == 2'd1 ? 32'h0000_8000 : 32'h8000_0000;
     signs_differ = idiv_dividend_neg ^ idiv_divisor_neg;
-    div_overflow = exec && (
+    div_overflow_cond = (
         (div_first_cycle &&
          ((aluop == ALUJMP_DIV7 &&
            (div_divisor_masked == 32'd0 ||
@@ -251,6 +252,7 @@ always_comb begin
            prediv_overflow_by_size(sigma, divtmp, op_size, divisor_abs_r)))) ||
         (aluop == ALUJMP_IDIV2 &&
          (signs_differ ? quotient > signed_max : quotient >= signed_max)));
+    div_overflow = exec && div_overflow_cond;
 end
 
 always_comb begin

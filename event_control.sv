@@ -101,6 +101,7 @@ module event_control
     output seq_redirect_t seq_fault_redirect,
     output seq_redirect_t seq_boundary_redirect,
     output logic recipe_fallback_taken,
+    output logic recipe_fallback_cond,  // its uc_exec-qualified term without uc_exec
     output logic gate_detect_now,
     output logic gate_detect_cond,
     output logic double_fault_start,
@@ -279,10 +280,10 @@ end
 // Qualified overlays launch without live architectural state on the ROM
 // address. Their first ustep redirects unsafe cases to original microcode;
 // the following overlay word is the architectural jump delay slot.
-assign recipe_fallback_taken =
-    (uc_exec && i_first &&
-     (i.ucode_action == RECIPE_ACTION_X87_OVERLAY) &&
-     !x87_direct_taken) || rmw_fallback_delay_r;
+assign recipe_fallback_cond = i_first &&
+                              (i.ucode_action == RECIPE_ACTION_X87_OVERLAY) &&
+                              !x87_direct_taken;
+assign recipe_fallback_taken = (uc_exec && recipe_fallback_cond) || rmw_fallback_delay_r;
 assign gate_detect_cond = pe && (uc_buscode == BUSOP_SDEL) &&
                           !gate_in_progress && !desc_raw_hi[12] &&
                           (desc_raw_hi[11:8] == 4'hC);
