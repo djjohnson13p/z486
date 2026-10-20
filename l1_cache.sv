@@ -831,6 +831,15 @@ wire tag_fill_way0 = tag_fill_write && (fill_way == 2'd0);
 wire tag_fill_way1 = tag_fill_write && (fill_way == 2'd1);
 wire tag_fill_way2 = tag_fill_write && (fill_way == 2'd2);
 wire tag_fill_way3 = tag_fill_write && (fill_way == 2'd3);
+// The set-wide clear against the preread set, compared per candidate and
+// picked by vipt_probe_fire last, so the CPU set (the issuing EA's page-offset
+// bits) reaches rd_invalidated_r through one compare instead of through the
+// preread_set select that also drives every RAM address.
+// tests/equiv/preread_clear_pick.v proves it equal to
+// tag_clear_all && (tag_clear_set == preread_set).
+wire preread_clear_hit = tag_clear_all &&
+                         (vipt_probe_fire ? (tag_clear_set == vipt_probe_set)
+                                          : (tag_clear_set == cpu_preread_set));
 
 always_ff @(posedge clk) begin
     if (idle_preread || lookup_wr_preread || vipt_probe_fire) begin
@@ -845,7 +854,7 @@ always_ff @(posedge clk) begin
         rd_plru_r <= plru_set[preread_set];
         // The clear is set-wide, so a read launched on the same edge returns
         // valid entries for every way of that set.  Mask them next cycle.
-        rd_invalidated_r <= ((tag_clear_all && (tag_clear_set == preread_set)) ||
+        rd_invalidated_r <= (preread_clear_hit ||
                              (idle_preread && !vipt_probe_fire && cpu_force_bus))
                             ? 4'b1111 : 4'b0000;
     end
