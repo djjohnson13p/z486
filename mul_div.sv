@@ -248,7 +248,7 @@ always_comb begin
            (div_divisor_masked == 32'd0 ||
             div_op_by_size(DIV_OP_MASK, sigma, op_size) >= div_divisor_masked)) ||
           (aluop == ALUJMP_PREDIV &&
-           (divisor_abs_r == 32'd0 || prediv_r_in >= divisor_abs_r)))) ||
+           prediv_overflow_by_size(sigma, divtmp, op_size, divisor_abs_r)))) ||
         (aluop == ALUJMP_IDIV2 &&
          (signs_differ ? quotient > signed_max : quotient >= signed_max)));
 end
@@ -338,6 +338,28 @@ function automatic logic [31:0] div_op_by_size(
         2'd1: div_op_by_size = {16'h0, v[15:0]};
         default: div_op_by_size = v;
     endcase
+endfunction
+
+// The PREDIV overflow test (divisor zero, or |dividend|'s upper half >= the
+// divisor) without the 64-bit dividend negator in front of the compare: the
+// upper half of the negated {H, L} is ~H + (L == 0) at the size, and a negative
+// H (its sign bit set) has ~H < 2^(n-1), so the add never wraps.  Thus
+// ~H + c >= d  <=>  ~H >= d || (c && ~H == d - 1) for d != 0, and the compare
+// reads the masked sigma/divtmp registers directly (the fitted op_size ->
+// full64 negator -> compare -> div_overflow -> ucode ROM address cone).
+// tests/equiv/prediv_overflow_fast.v proves it equal to
+// (d == 0 || prediv_r_in >= d) for every sigma, divtmp, size and d.
+function automatic logic prediv_overflow_by_size(input logic [31:0] h_raw,
+                                                 input logic [31:0] l_raw,
+                                                 input logic [1:0]  size,
+                                                 input logic [31:0] d);
+    logic        neg;
+    logic [31:0] hx;
+    neg = div_sign_bit(h_raw, size);
+    hx = div_op_by_size(DIV_OP_MASK, neg ? ~h_raw : h_raw, size);
+    prediv_overflow_by_size = (d == 32'd0) || (hx >= d) ||
+        (neg && (div_op_by_size(DIV_OP_MASK, l_raw, size) == 32'd0) &&
+         (hx == d - 32'd1));
 endfunction
 
 function automatic logic mul_overflow_by_size(
