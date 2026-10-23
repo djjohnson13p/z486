@@ -17,3 +17,7 @@ mutants must all produce their expected SAT verdict. A parser/tool failure is
 never accepted as a killed mutant. This establishes the rewrite's equivalence
 to the reference, not architectural correctness of the reference CPU, FPGA
 timing, a PC9821 boot or hardware operation.
+
+The release invocation uses the installed **yosys-slang** frontend. See
+`../../README.selected-ex.md` for plugin selection, dependency failures,
+prepare-only review, resource bounds and the preserved legacy diagnostic.

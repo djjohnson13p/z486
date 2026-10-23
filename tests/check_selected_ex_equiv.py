@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare/run actual-RTL selected EX-read proofs. Default: prepare only.
 
+Slang is the default frontend; --frontend legacy preserves the old diagnostic.
 --run invokes Yosys sequentially, with a per-case wall timeout. The calling
 gate must also apply its host memory/commit guard. Every invocation gets a
 fresh output directory; existing evidence is never overwritten.
@@ -10,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -222,7 +224,43 @@ def miter(old_merge: str, new_merge: str, old_du: str, new_du: str, wiring: bool
     return "\n".join(lines)
 
 
-def prepare(out: Path) -> dict:
+def resolve_tooling(yosys: str, frontend: str, plugin: str | None) -> dict:
+    """Bind an explicit tool/plugin before creating or executing any case."""
+    executable = shutil.which(yosys)
+    if executable is None:
+        raise ValueError("Yosys is required; absence is not a skipped pass")
+    executable = Path(executable).resolve(strict=True)
+    if not executable.is_file():
+        raise ValueError("Yosys executable is not a file")
+    plugin_path = None
+    if frontend == "slang":
+        explicit = plugin or os.environ.get("YOSYS_SLANG_PLUGIN")
+        if explicit:
+            plugin_path = Path(explicit).resolve(strict=True)
+            if not plugin_path.is_file():
+                raise ValueError("Explicit Slang plugin is not a file")
+        else:
+            candidates = [executable.parent.parent / "share/yosys/plugins/slang.so",
+                          executable.parent.parent / "lib/yosys/plugins/slang.so"]
+            if os.environ.get("YOSYS_DATDIR"):
+                candidates.append(Path(os.environ["YOSYS_DATDIR"]) / "plugins/slang.so")
+            available = sorted({p.resolve() for p in candidates if p.is_file()})
+            if len(available) != 1:
+                raise ValueError("Slang plugin is required; set --slang-plugin or YOSYS_SLANG_PLUGIN "
+                                 "to one installed plugin (missing/ambiguous is a failure, never a skip)")
+            plugin_path = available[0]
+    elif plugin:
+        raise ValueError("--slang-plugin requires --frontend slang")
+    command = [str(executable), "-T", "-Q"]
+    if plugin_path:
+        command += ["-m", str(plugin_path)]
+    return {"frontend": frontend, "yosys": str(executable), "yosys_sha256": sha(executable),
+            "slang_plugin": str(plugin_path) if plugin_path else None,
+            "slang_plugin_sha256": sha(plugin_path) if plugin_path else None,
+            "command_prefix": command}
+
+
+def prepare(out: Path, tooling: dict) -> dict:
     manifest = json.loads((REF / "manifest.json").read_text())
     if manifest["origin_commit"] != ORIGIN:
         raise ValueError("Wrong frozen CPU origin")
@@ -267,23 +305,29 @@ def prepare(out: Path) -> dict:
     ]
     out.mkdir(parents=True, exist_ok=False)
     receipt_cases = []
+    frontend_line = ("read_slang --threads 1 --no-implicit-memories --top selected_ex_miter "
+                     "old_module.sv new_module.sv miter.sv\n") if tooling["frontend"] == "slang" else (
+                     "read_verilog -sv old_module.sv new_module.sv miter.sv\n")
     for name, wiring, merge_variant, du_variant, expected_equivalent in cases:
         case = out / name
         case.mkdir()
         texts = {"old_module.sv": yosys_module(old_merge, "merge_old", constants_text),
                  "new_module.sv": yosys_module(merge_variant, "merge_new", constants_text),
                  "miter.sv": miter(old_merge, merge_variant, old_du, du_variant, wiring),
-                 "proof.ys": "read_verilog -sv old_module.sv new_module.sv miter.sv\n"
-                             "prep -top selected_ex_miter\nflatten\nopt_clean\n"
+                 "proof.ys": frontend_line + "prep -top selected_ex_miter\nflatten\nopt_clean\n"
                              "sat -prove mismatch 0 -verify -show-inputs\n"}
         for filename, text in texts.items():
             (case / filename).write_text(text, encoding="utf-8")
         receipt_cases.append({"name": name, "expected_equivalent": expected_equivalent,
                               "actual_merge_variant_sha256": sha_bytes(merge_variant.encode()),
                               "actual_data_unit_variant_sha256": sha_bytes(du_variant.encode()),
+                              "command": tooling["command_prefix"] + ["-s", "proof.ys"],
                               "prepared_sha256": {n: sha(case / n) for n in texts}})
     bindings = [CPU / "gpr_write_merge.sv", CPU / "data_unit.sv", CPU / "z486_pkg.sv", CPU / "shifter.sv", Path(__file__),
                 REF / "manifest.json", *(REF / n for n in manifest["git_blobs"])]
+    bindings.append(Path(tooling["yosys"]))
+    if tooling["slang_plugin"]:
+        bindings.append(Path(tooling["slang_plugin"]))
     receipt = {"created_utc": datetime.now(timezone.utc).isoformat(), "origin": ORIGIN,
                "scope": "actual combinational merge bodies plus actual destination formatter/port wiring",
                "simulation_fuses_excluded_as_synthesis": True,
@@ -292,6 +336,7 @@ def prepare(out: Path) -> dict:
                "shifter_unchanged_at_origin_git_blob": manifest["unchanged_git_blobs"]["shifter.sv"],
                "independent_data_wb_and_fwd_wb": True, "inputs_free_all_producers_and_visibility": True,
                "destination_wiring_visibility": "actual unchanged data_unit constants",
+               "tooling": tooling,
                "model_or_compiler_launched": False, "proofs_passed": False,
                "input_sha256": {str(p): sha(p) for p in bindings}, "cases": receipt_cases}
     (out / "preparation.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
@@ -313,21 +358,22 @@ def main() -> int:
     ap.add_argument("--out", type=Path)
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--yosys", default="yosys")
+    ap.add_argument("--frontend", choices=("slang", "legacy"), default="slang",
+                    help="Slang is required by the release gate; legacy retains the old parser diagnostic")
+    ap.add_argument("--slang-plugin", help="explicit installed plugin file; otherwise YOSYS_SLANG_PLUGIN or one adjacent installed plugin")
     ap.add_argument("--wall-seconds", type=float, default=120)
     args = ap.parse_args()
     if not 1 <= args.wall_seconds <= 300:
         ap.error("--wall-seconds must be 1..300")
     out = (args.out or HERE / "obj_dir/selected-ex-equiv" /
            (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8])).resolve()
-    receipt = prepare(out)
+    tooling = resolve_tooling(args.yosys, args.frontend, args.slang_plugin)
+    receipt = prepare(out, tooling)
     verify_prepared(out, receipt)
     print(f"selected-ex: prepared {len(receipt['cases'])} actual-source cases in {out}")
     if not args.run:
         print("selected-ex: no compiler/model launched; proof verdict pending")
         return 0
-    exe = shutil.which(args.yosys)
-    if exe is None:
-        raise ValueError("Yosys is required; absence is not a skipped pass")
     results = []
     for case in receipt["cases"]:
         verify_prepared(out, receipt)
@@ -335,7 +381,7 @@ def main() -> int:
         log_path = folder / "yosys.log"
         with log_path.open("wb") as log:
             try:
-                run = subprocess.run([exe, "-T", "-Q", "-s", "proof.ys"], cwd=folder,
+                run = subprocess.run(case["command"], cwd=folder,
                                      stdout=log, stderr=subprocess.STDOUT, timeout=args.wall_seconds)
                 exit_code = run.returncode
             except subprocess.TimeoutExpired:
@@ -352,7 +398,8 @@ def main() -> int:
     verify_prepared(out, receipt)
     passed = len(results) == len(receipt["cases"]) and all(x["accepted"] for x in results)
     (out / "results.json").write_text(json.dumps({"model_or_compiler_launched": True,
-        "preparation_sha256": sha(out / "preparation.json"), "passed": passed, "results": results}, indent=2) + "\n", encoding="utf-8")
+        "preparation_sha256": sha(out / "preparation.json"), "tooling": tooling,
+        "passed": passed, "results": results}, indent=2) + "\n", encoding="utf-8")
     print(f"selected-ex: {'PASS' if passed else 'FAIL'} (combinational rewrite equivalence only)")
     return 0 if passed else 1
 

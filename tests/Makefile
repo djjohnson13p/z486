@@ -173,7 +173,7 @@ check-runner:
 # planted mutant that must be refuted.  Needs yosys.
 check-equiv:
 	python3 check_equiv.py
-	python3 check_selected_ex_equiv.py --run
+	python3 check_selected_ex_equiv.py --run --frontend slang
 
 # Seeded differential stress of the integer pipeline (self-checking programs,
 # three memory latencies each).  FUZZ_COUNT=200 for a longer soak.
