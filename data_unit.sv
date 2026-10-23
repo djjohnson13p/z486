@@ -380,6 +380,8 @@ logic [255:0] pr_pulse_value, pr_pulse_wmask;
 wire [2:0]  load_capture_widx;
 wire [31:0] load_capture_base;
 wire [31:0] cap_src_value;
+wire [31:0] shifter_dst_full_ex_value;
+wire [15:0] shifter_dst_byte_ex_value;
 
 gpr_write_merge gpr_merge (
     .cur({edi, esi, ebp, esp, ebx, edx, ecx, eax}),
@@ -447,7 +449,11 @@ gpr_write_merge gpr_merge (
     .cap_sel_a(op_size == 2'd0 ? {1'b0, src_reg_sel_r[1:0]} : src_reg_sel_r),
     .cap_sel_b(load_capture_widx),
     .cap_a_value(cap_src_value),
-    .cap_b_value(load_capture_base)
+    .cap_b_value(load_capture_base),
+    .ex_sel_full(dst_reg_sel_r),
+    .ex_sel_byte({1'b0, dst_reg_sel_r[1:0]}),
+    .ex_full_value(shifter_dst_full_ex_value),
+    .ex_byte_value(shifter_dst_byte_ex_value)
 );
 
 // synthesis translate_off
@@ -497,26 +503,21 @@ function automatic logic [31:0] read_gpr_load_forwarded(
     end
 endfunction
 
-// The same read with the SIZE applied last: both register views are indexed by
-// reg_sel alone and the size only picks among the formatted results.  For the
-// shifter's operand the size is shift_data_size, a late, high-fan-out select
-// (the fitted microcode q_shift_source_class_r -> use_captured_source ->
-// data_size -> gpr_ex_view index -> shifter -> sigma clk_sys cone); indexing by
-// it put that select in FRONT of the 8:1 view mux.  Bit-identical to
-// read_gpr_load_forwarded for every input.
-function automatic logic [31:0] read_gpr_load_forwarded_late(
+// The shifter's selected EX reads choose their register before merging late
+// load data. Keep SIZE last: AH/AL, word and dword formatting must not put
+// shift_data_size back in front of a register index or a producer comparison.
+function automatic logic [31:0] format_gpr_selected_late(
     input logic [2:0] reg_sel,
-    input logic [1:0] size
+    input logic [1:0] size,
+    input logic [31:0] full_src,
+    input logic [15:0] byte_src
 );
-    logic [31:0] byte_src, full_src;
     logic [7:0]  byte_val;
     begin
-        byte_src = gpr_ex_view[{1'b0, reg_sel[1:0]}];
-        full_src = gpr_ex_view[reg_sel];
         byte_val = reg_sel[2] ? byte_src[15:8] : byte_src[7:0];
-        read_gpr_load_forwarded_late = (size == 2'd0) ? {24'd0, byte_val} :
-                                       (size == 2'd1) ? {16'd0, full_src[15:0]} :
-                                                        full_src;
+        format_gpr_selected_late = (size == 2'd0) ? {24'd0, byte_val} :
+                                   (size == 2'd1) ? {16'd0, full_src[15:0]} :
+                                                    full_src;
     end
 endfunction
 
@@ -1829,7 +1830,9 @@ shifter shifter_inst (
     .alu_dst(alu_dst),
     .alu_src(alu_src),
     .gpr_src_op_size(read_gpr_load_forwarded(src_reg_sel_r, op_size)),
-    .gpr_dst_shift_size(read_gpr_load_forwarded_late(dst_reg_sel_r, shift_data_size)),
+    .gpr_dst_shift_size(format_gpr_selected_late(dst_reg_sel_r, shift_data_size,
+                                              shifter_dst_full_ex_value,
+                                              shifter_dst_byte_ex_value)),
     .gpr_src_shift_size(read_gpr_load_forwarded(src_reg_sel_r, shift_data_size)),
     .immediate(instr.immediate),
     .ecx(read_gpr_load_forwarded(3'd1, 2'd2)),

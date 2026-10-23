@@ -1,5 +1,6 @@
 // data_unit.sv: read_gpr_load_forwarded (size indexes the 8:1 view) against
-// read_gpr_load_forwarded_late (both views indexed by reg_sel, size last).
+// the selected-read formatter (both views indexed by reg_sel, size last).
+// The actual selected module/formatter/port proof is check_selected_ex_equiv.py.
 // MUTANT=1 indexes the byte view by the full reg_sel and must be refuted.
 module shift_src_late #(parameter MUTANT = 0)
   (input [255:0] view, input [2:0] reg_sel, input [1:0] size, output mismatch);

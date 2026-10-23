@@ -1,6 +1,6 @@
 // check-equiv: functions ../../gpr_write_merge.sv align_of_size
 // gpr_write_merge.sv producer 3 in the three views (byte_ex/byte_ea/byte_cap,
-// cap_select), as data_unit.sv wires it: data_wb = load_wb_commit_data
+// select_view), as data_unit.sv wires it: data_wb = load_wb_commit_data
 // (= load_wb_is_alu ? load_wb_alu_result : load_wb_data), fwd_wb = load_wb_data.
 // old: a view lane takes pv3 = align_of_size(size, hb, data_wb) under hitv3.
 // new: it takes pv3f = align_of_size(size, hb, fwd_wb) under hitv3.

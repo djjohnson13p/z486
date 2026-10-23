@@ -34,6 +34,9 @@ module tb_gpr_write_merge;
     logic [255:0] ex_value, ea_value, cap_value;
     logic [2:0]   cap_sel_a = 3'd0, cap_sel_b = 3'd0;
     logic [31:0]  cap_a_value, cap_b_value;
+    logic [2:0]   ex_sel_full = 3'd0, ex_sel_byte = 3'd0;
+    logic [31:0]  ex_full_value;
+    logic [15:0]  ex_byte_value;
 
     integer failures = 0;
 
@@ -54,7 +57,9 @@ module tb_gpr_write_merge;
         .pulse_value(pulse_value), .pulse_wmask(pulse_wmask),
         .ex_value(ex_value), .ea_value(ea_value), .cap_value(cap_value),
         .cap_sel_a(cap_sel_a), .cap_sel_b(cap_sel_b),
-        .cap_a_value(cap_a_value), .cap_b_value(cap_b_value)
+        .cap_a_value(cap_a_value), .cap_b_value(cap_b_value),
+        .ex_sel_full(ex_sel_full), .ex_sel_byte(ex_sel_byte),
+        .ex_full_value(ex_full_value), .ex_byte_value(ex_byte_value)
     );
 
     function automatic [31:0] regval(input [255:0] v, input int r);
@@ -81,10 +86,17 @@ module tb_gpr_write_merge;
         for (int i = 0; i < 8; i++) begin
             cap_sel_a = 3'(i);
             cap_sel_b = 3'(7 - i);
+            ex_sel_full = 3'(i);
+            ex_sel_byte = 3'(7 - i);
             #1;
             if (cap_a_value !== regval(cap_value, i) ||
                 cap_b_value !== regval(cap_value, 7 - i)) begin
                 $display("GPR MERGE FAIL %s: select-first capture reg %0d", name, i);
+                failures = failures + 1;
+            end
+            if (ex_full_value !== regval(ex_value, i) ||
+                {16'd0, ex_byte_value} !== (regval(ex_value, 7 - i) & 32'hffff)) begin
+                $display("GPR MERGE FAIL %s: select-first EX reg %0d", name, i);
                 failures = failures + 1;
             end
         end

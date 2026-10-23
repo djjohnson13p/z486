@@ -137,7 +137,15 @@ module gpr_write_merge
     input  logic [2:0]   cap_sel_a,
     input  logic [2:0]   cap_sel_b,
     output logic [31:0]  cap_a_value,
-    output logic [31:0]  cap_b_value
+    output logic [31:0]  cap_b_value,
+
+    // Selected EX reads keep returned load data out of a following 8:1 bank
+    // mux. The byte-bank reader needs only the two low bytes; its register
+    // index and the full-width index are independent of the consumer's size.
+    input  logic [2:0]   ex_sel_full,
+    input  logic [2:0]   ex_sel_byte,
+    output logic [31:0]  ex_full_value,
+    output logic [15:0]  ex_byte_value
 );
 
 localparam logic [7:0] VIS_COMMIT = 8'h0F;   // shift, mem, rom, wb
@@ -259,9 +267,11 @@ wire [31:0] pv7 = producer_value(7);
 // Producer 3 as the views see it (see fwd_wb): equal to pv3 wherever hitv3.
 wire [31:0] pv3f = align_of_size(size_wb, dst_wb[2], fwd_wb);
 
-// The capture-view merge for one selected register: the same terms in the same
-// order as byte_cap below, with the register comparison folded into each hit.
-function automatic logic [31:0] cap_select(input logic [2:0] sel);
+// Selected views use the same producer order and lane rules as the full banks.
+// Choosing cur[sel] before merging means a late producer need not cross an
+// 8:1 register-read mux after it wins its lanes. Visibility remains per view.
+function automatic logic [31:0] select_view(input logic [2:0] sel,
+                                           input logic [7:0] visibility);
     logic [3:0] en [8];
     logic [31:0] cv;
     logic [31:0] pvs [8];
@@ -273,16 +283,19 @@ function automatic logic [31:0] cap_select(input logic [2:0] sel);
     for (int bb = 0; bb < 4; bb++) begin
         // lowest priority first, so a later (younger, higher-priority) hit wins
         for (int k = 0; k < 8; k++) begin
-            if (vis_cap[k] && producer_valid(k) && en[k][bb] &&
+            if (visibility[k] && producer_valid(k) && en[k][bb] &&
                 !((k == 3) && wb_is_alu))
                 cv[bb*8 +: 8] = pvs[k][bb*8 +: 8];
         end
     end
-    cap_select = cv;
+    select_view = cv;
 endfunction
 
-assign cap_a_value = cap_select(cap_sel_a);
-assign cap_b_value = cap_select(cap_sel_b);
+assign cap_a_value = select_view(cap_sel_a, vis_cap);
+assign cap_b_value = select_view(cap_sel_b, vis_cap);
+assign ex_full_value = select_view(ex_sel_full, vis_ex);
+wire [31:0] ex_byte_selected = select_view(ex_sel_byte, vis_ex);
+assign ex_byte_value = ex_byte_selected[15:0];
 
 genvar r, b;
 generate
@@ -445,6 +458,11 @@ always_comb begin : merge_equiv_fuse
         if ((rr == int'(cap_sel_b)) && (cap_b_value !== ref_chain(rr, vis_cap, 1'b1)))
             $fatal(1, "GPR MERGE SELECTED CAPTURE B MISMATCH reg %0d: %08x vs chain %08x",
                    rr, cap_b_value, ref_chain(rr, vis_cap, 1'b1));
+        if ((rr == int'(ex_sel_full)) && (ex_full_value !== ref_chain(rr, vis_ex, 1'b1)))
+            $fatal(1, "GPR MERGE SELECTED EX FULL MISMATCH reg %0d", rr);
+        if ((rr == int'(ex_sel_byte)) &&
+            ({16'd0, ex_byte_value} !== (ref_chain(rr, vis_ex, 1'b1) & 32'hffff)))
+            $fatal(1, "GPR MERGE SELECTED EX BYTE MISMATCH reg %0d", rr);
         if (cap_value[rr*32 +: 32] !== ref_chain(rr, vis_cap, 1'b1))
             $fatal(1, "GPR MERGE CAPTURE VIEW MISMATCH reg %0d: %08x vs chain %08x",
                    rr, cap_value[rr*32 +: 32], ref_chain(rr, vis_cap, 1'b1));
