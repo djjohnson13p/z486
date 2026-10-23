@@ -63,11 +63,15 @@ def run(path: pathlib.Path, mutant: int) -> bool:
     # is proved by temporal induction from its declared power-up values.
     seq = path.read_text().startswith("// check-equiv: tempinduct")
     path = model_source(path)
+    # Keep the embedded yosys script independent of the host's absolute-path
+    # syntax (for example, a POSIX Python driving a native Windows yosys).
+    source = path.resolve().relative_to(HERE.resolve()).as_posix()
     sat = ("sat -tempinduct -prove mismatch 0 -verify" if seq
            else "sat -prove mismatch 0 -verify -show-inputs")
-    script = (f"read_verilog -sv {path}; chparam -set MUTANT {mutant} {top}; "
+    script = (f"read_verilog -sv {source}; chparam -set MUTANT {mutant} {top}; "
               f"prep -top {top}; flatten; {sat}")
     r = subprocess.run(["yosys", "-q", "-p", script],
+                       cwd=HERE,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     return r.returncode == 0
 
