@@ -430,6 +430,17 @@ localparam ENABLE_X87 = 0;
 
         force dut.CR0 = 32'h8000_0001;
         force dut.CR3 = 32'h0000_0000;
+`ifdef Z486_CURRENT_CORE
+        // Initialize the procedural register state, not z486's output-wire aliases.
+        force dut.data_unit_inst.eax = 32'h0;
+        force dut.data_unit_inst.ecx = 32'h0;
+        force dut.data_unit_inst.edx = 32'h0;
+        force dut.data_unit_inst.ebx = 32'h0;
+        force dut.data_unit_inst.esp = 32'h0000_FF00;
+        force dut.data_unit_inst.ebp = 32'h0;
+        force dut.data_unit_inst.esi = 32'h0;
+        force dut.data_unit_inst.edi = 32'h0;
+`else
         force dut.EAX = 32'h0;
         force dut.ECX = 32'h0;
         force dut.EDX = 32'h0;
@@ -438,6 +449,7 @@ localparam ENABLE_X87 = 0;
         force dut.EBP = 32'h0;
         force dut.ESI = 32'h0;
         force dut.EDI = 32'h0;
+`endif
         force dut.EFLAGS = 32'h0000_0002;
         force dut.CS = 16'h0008;
         force dut.DS = 16'h0010;
@@ -480,6 +492,16 @@ localparam ENABLE_X87 = 0;
         reset_n = 1;
         release dut.CR0;
         release dut.CR3;
+`ifdef Z486_CURRENT_CORE
+        release dut.data_unit_inst.eax;
+        release dut.data_unit_inst.ecx;
+        release dut.data_unit_inst.edx;
+        release dut.data_unit_inst.ebx;
+        release dut.data_unit_inst.esp;
+        release dut.data_unit_inst.ebp;
+        release dut.data_unit_inst.esi;
+        release dut.data_unit_inst.edi;
+`else
         release dut.EAX;
         release dut.ECX;
         release dut.EDX;
@@ -488,6 +510,7 @@ localparam ENABLE_X87 = 0;
         release dut.EBP;
         release dut.ESI;
         release dut.EDI;
+`endif
         release dut.EFLAGS;
         release dut.CS;
         release dut.DS;
@@ -511,6 +534,22 @@ localparam ENABLE_X87 = 0;
         release dut.prefetch_inst.fill_ptr;
 `else
         release dut.prefetch_inst.pf_fetch_addr;
+`endif
+
+`ifdef Z486_CURRENT_CORE
+        // Reset releases at t=80; check retained state at t=81, before t=85's edge.
+        #1;
+        if ({dut.data_unit_inst.eax, dut.data_unit_inst.ecx,
+             dut.data_unit_inst.edx, dut.data_unit_inst.ebx,
+             dut.data_unit_inst.esp, dut.data_unit_inst.ebp,
+             dut.data_unit_inst.esi, dut.data_unit_inst.edi} !==
+            {32'h0, 32'h0, 32'h0, 32'h0, 32'h0000_FF00, 32'h0, 32'h0, 32'h0})
+            $fatal(1, "[TB] BOOTSTRAP_GPR_FAIL backing register state");
+        if ({dut.EAX, dut.ECX, dut.EDX, dut.EBX,
+             dut.ESP, dut.EBP, dut.ESI, dut.EDI} !==
+            {32'h0, 32'h0, 32'h0, 32'h0, 32'h0000_FF00, 32'h0, 32'h0, 32'h0})
+            $fatal(1, "[TB] BOOTSTRAP_GPR_FAIL top register views");
+        $display("[TB] BOOTSTRAP_GPR_PASS eight backing registers and top views retained; ESP=0000ff00");
 `endif
 
         $display("[TB] CPU reset complete, starting execution");
